@@ -147,6 +147,7 @@ export default function CartoesScreen() {
     parcelaAtual: number;
     parcelasTotal: number;
     marcado: boolean;
+    data?: Date;
   }) => {
     if (!canEdit) {
       setSnackbarVisible(true);
@@ -227,7 +228,7 @@ export default function CartoesScreen() {
             <Text variant="bodyMedium">Total utilizado</Text>
             <Text
               variant="titleMedium"
-              style={[styles.totalUtilizado, { color: '#FF9800' }]}
+              style={[styles.totalUtilizado, { color: theme.colors.tertiary }]}
             >
               {formatCurrency(totalUtilizado)}
             </Text>
@@ -236,7 +237,7 @@ export default function CartoesScreen() {
             <Text variant="bodyMedium">Limite disponível</Text>
             <Text
               variant="titleMedium"
-              style={[styles.totalDisponivel, { color: '#4CAF50' }]}
+              style={[styles.totalDisponivel, { color: theme.colors.primary }]}
             >
               {formatCurrency(totalDisponivel)}
             </Text>
@@ -253,7 +254,7 @@ export default function CartoesScreen() {
           <MaterialCommunityIcons
             name="credit-card-outline"
             size={64}
-            color="#BDBDBD"
+            color={theme.colors.onSurfaceDisabled}
           />
           <Text variant="titleMedium" style={styles.emptyTitle}>
             Nenhum cartão cadastrado

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { Card, Text, List, IconButton, Chip, useTheme } from 'react-native-paper';
+import { Card, Text, List, IconButton, Chip, useTheme, Badge } from 'react-native-paper';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Cartao, Compra } from '../types/month';
 import { formatCurrency } from '../utils/calculations';
 
@@ -33,19 +34,25 @@ export default function CartaoCard({
   const percentageUsed = cartao.limiteTotal > 0 ? (limiteUtilizado / cartao.limiteTotal) * 100 : 0;
 
   const getUsageColor = () => {
-    if (percentageUsed >= 90) return '#F44336';
-    if (percentageUsed >= 70) return '#FF9800';
-    return '#4CAF50';
+    if (percentageUsed >= 90) return theme.colors.error;
+    if (percentageUsed >= 70) return theme.colors.tertiary;
+    return theme.colors.primary;
   };
 
   return (
-    <Card style={styles.card}>
+    <Card style={[styles.card, { overflow: 'hidden' }]} elevation={2}>
       <List.Accordion
         title={cartao.nome}
         description={`Fatura: ${formatCurrency(cartao.totalFatura)}`}
         expanded={expanded}
         onPress={() => setExpanded(!expanded)}
         left={(props) => <List.Icon {...props} icon="credit-card" />}
+        style={{
+          backgroundColor: theme.colors.elevation.level1,
+          borderRadius: expanded ? 0 : 12,
+          borderTopLeftRadius: 12,
+          borderTopRightRadius: 12,
+        }}
         right={(props) =>
           !readonly ? (
             <View style={styles.headerRight}>
@@ -70,7 +77,7 @@ export default function CartaoCard({
         }
       >
         {/* Card Summary */}
-        <Card.Content style={styles.summary}>
+        <Card.Content style={[styles.summary, { borderBottomColor: theme.colors.outlineVariant }]}>
           <View style={styles.summaryRow}>
             <Text variant="bodySmall">Limite total</Text>
             <Text variant="bodyMedium" style={styles.bold}>
@@ -92,7 +99,14 @@ export default function CartaoCard({
         </Card.Content>
 
         {/* Purchases List */}
-        <Card.Content style={styles.comprasSection}>
+        <Card.Content style={[
+          styles.comprasSection,
+          {
+            borderTopColor: theme.colors.outlineVariant,
+            borderBottomLeftRadius: 12,
+            borderBottomRightRadius: 12,
+          }
+        ]}>
           <View style={styles.comprasHeader}>
             <Text variant="titleSmall">Compras ({cartao.compras.length})</Text>
             {!readonly && (
@@ -113,19 +127,48 @@ export default function CartaoCard({
             cartao.compras.map((compra) => {
               const valorParcela = compra.valorTotal / compra.parcelasTotal;
               return (
-                <Card key={compra.id} style={styles.compraCard} mode="outlined">
+                <Card
+                  key={compra.id}
+                  style={[
+                    styles.compraCard,
+                    { backgroundColor: theme.colors.elevation.level1 }
+                  ]}
+                  mode="outlined"
+                >
                   <Card.Content>
                     <View style={styles.compraHeader}>
                       <View style={styles.compraInfo}>
-                        <Text variant="bodyMedium" style={styles.bold}>
-                          {compra.descricao}
-                        </Text>
+                        <View style={styles.descricaoRow}>
+                          <Text variant="bodyMedium" style={styles.bold}>
+                            {compra.descricao}
+                          </Text>
+                          {compra.purchaseGroupId && (
+                            <MaterialCommunityIcons
+                              name="link-variant"
+                              size={16}
+                              color={theme.colors.primary}
+                              style={styles.linkIcon}
+                            />
+                          )}
+                        </View>
                         <Text variant="bodySmall" style={styles.parcelas}>
                           {compra.parcelaAtual}/{compra.parcelasTotal}x de {formatCurrency(valorParcela)}
+                          {compra.purchaseGroupId && (
+                            <Text style={[styles.linkedBadge, { color: theme.colors.primary }]}>
+                              {' '}• Sincronizado
+                            </Text>
+                          )}
                         </Text>
                         <Text variant="bodySmall" style={styles.total}>
                           Total: {formatCurrency(compra.valorTotal)}
                         </Text>
+                        {compra.data && (
+                          <Text variant="bodySmall" style={styles.dataCompra}>
+                            Data: {new Date(
+                              compra.data instanceof Date ? compra.data : compra.data.toDate()
+                            ).toLocaleDateString('pt-BR')}
+                          </Text>
+                        )}
                       </View>
                       <View style={styles.compraActions}>
                         <Chip
@@ -171,6 +214,7 @@ const styles = StyleSheet.create({
   card: {
     marginBottom: 12,
     marginHorizontal: 16,
+    borderRadius: 12,
   },
   headerRight: {
     flexDirection: 'row',
@@ -179,6 +223,7 @@ const styles = StyleSheet.create({
   },
   summary: {
     paddingTop: 8,
+    borderBottomWidth: 1,
   },
   summaryRow: {
     flexDirection: 'row',
@@ -191,7 +236,7 @@ const styles = StyleSheet.create({
   comprasSection: {
     paddingTop: 16,
     borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
+    borderTopColor: 'transparent', // Will be set via theme in component
   },
   comprasHeader: {
     flexDirection: 'row',
@@ -206,7 +251,7 @@ const styles = StyleSheet.create({
   },
   compraCard: {
     marginBottom: 8,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: 'transparent', // Will be set via theme in component
   },
   compraHeader: {
     flexDirection: 'row',
@@ -215,11 +260,27 @@ const styles = StyleSheet.create({
   compraInfo: {
     flex: 1,
   },
+  descricaoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  linkIcon: {
+    marginLeft: 6,
+  },
   parcelas: {
     marginTop: 4,
     opacity: 0.7,
   },
+  linkedBadge: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
   total: {
+    marginTop: 2,
+    opacity: 0.6,
+    fontSize: 12,
+  },
+  dataCompra: {
     marginTop: 2,
     opacity: 0.6,
     fontSize: 12,

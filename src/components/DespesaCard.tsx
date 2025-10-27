@@ -1,9 +1,11 @@
 import React from 'react';
 import { View, StyleSheet, TouchableOpacity } from 'react-native';
-import { Card, Text, Switch, IconButton, useTheme } from 'react-native-paper';
+import { Card, Text, Switch, IconButton, useTheme, Chip } from 'react-native-paper';
 import { Swipeable } from 'react-native-gesture-handler';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Despesa } from '../types/month';
 import { formatCurrency } from '../utils/calculations';
+import { RECURRENCE_OPTIONS } from '../types/recurring';
 
 interface DespesaCardProps {
   despesa: Despesa;
@@ -22,8 +24,8 @@ export default function DespesaCard({
 }: DespesaCardProps) {
   const theme = useTheme();
 
-  const borderColor = despesa.pago ? '#4CAF50' : '#BDBDBD';
-  const iconColor = despesa.pago ? theme.colors.primary : '#9E9E9E';
+  const borderColor = despesa.pago ? theme.colors.primary : theme.colors.outline;
+  const iconColor = despesa.pago ? theme.colors.primary : theme.colors.onSurfaceDisabled;
 
   const renderRightActions = () => {
     if (readonly) return null;
@@ -62,9 +64,27 @@ export default function DespesaCard({
                 style={styles.icon}
               />
               <View style={styles.textContent}>
-                <Text variant="titleMedium" style={styles.name}>
-                  {despesa.nome}
-                </Text>
+                <View style={styles.nameRow}>
+                  <Text variant="titleMedium" style={styles.name}>
+                    {despesa.nome}
+                  </Text>
+                  {despesa.recurring?.isRecurring && despesa.recurring.frequency && (
+                    <Chip
+                      icon={() => (
+                        <MaterialCommunityIcons
+                          name={RECURRENCE_OPTIONS[despesa.recurring.frequency!].icon as any}
+                          size={14}
+                          color={theme.colors.primary}
+                        />
+                      )}
+                      compact
+                      style={[styles.recurrenceChip, { backgroundColor: theme.colors.primaryContainer }]}
+                      textStyle={[styles.recurrenceText, { color: theme.colors.primary }]}
+                    >
+                      {RECURRENCE_OPTIONS[despesa.recurring.frequency!].label}
+                    </Chip>
+                  )}
+                </View>
                 <Text
                   variant="titleSmall"
                   style={[styles.value, { color: theme.colors.primary }]}
@@ -109,9 +129,23 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     flex: 1,
   },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+    flexWrap: 'wrap',
+    gap: 6,
+  },
   name: {
     fontWeight: '600',
-    marginBottom: 4,
+  },
+  recurrenceChip: {
+    height: 22,
+  },
+  recurrenceText: {
+    fontSize: 10,
+    fontWeight: '600',
+    marginVertical: 0,
   },
   value: {
     fontWeight: 'bold',

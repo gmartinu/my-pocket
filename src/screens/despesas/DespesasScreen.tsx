@@ -23,6 +23,7 @@ import { usePermissions } from '../../hooks/usePermissions';
 import { Despesa } from '../../types/month';
 import { formatCurrency } from '../../utils/calculations';
 import { formatMonthName } from '../../utils/dateUtils';
+import { RecurringExpenseConfig } from '../../types/recurring';
 
 type FilterType = 'all' | 'paid' | 'unpaid';
 
@@ -114,6 +115,7 @@ export default function DespesasScreen() {
     nome: string;
     valorPlanejado: string;
     pago: boolean;
+    recurring?: RecurringExpenseConfig;
   }) => {
     if (!canEdit) {
       setSnackbarVisible(true);
@@ -186,7 +188,7 @@ export default function DespesasScreen() {
             <Text variant="bodyMedium">Total pago</Text>
             <Text
               variant="titleMedium"
-              style={[styles.totalPago, { color: '#4CAF50' }]}
+              style={[styles.totalPago, { color: theme.colors.primary }]}
             >
               {formatCurrency(totalPago)}
             </Text>
@@ -220,12 +222,18 @@ export default function DespesasScreen() {
           { value: 'unpaid', label: 'Não Pagas' },
         ]}
         style={styles.filters}
+        theme={{
+          colors: {
+            secondaryContainer: theme.colors.primaryContainer,
+            onSecondaryContainer: theme.colors.onPrimaryContainer,
+          }
+        }}
       />
 
       {/* List */}
       {filteredDespesas.length === 0 ? (
         <View style={styles.emptyState}>
-          <MaterialCommunityIcons name="receipt-text-outline" size={64} color="#BDBDBD" />
+          <MaterialCommunityIcons name="receipt-text-outline" size={64} color={theme.colors.onSurfaceDisabled} />
           <Text variant="titleMedium" style={styles.emptyTitle}>
             {searchQuery ? 'Nenhuma despesa encontrada' : 'Nenhuma despesa cadastrada'}
           </Text>

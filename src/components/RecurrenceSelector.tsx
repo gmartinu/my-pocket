@@ -10,11 +10,13 @@ import {
 interface RecurrenceSelectorProps {
   config: RecurringExpenseConfig;
   onChange: (config: RecurringExpenseConfig) => void;
+  disabled?: boolean;
 }
 
 export const RecurrenceSelector: React.FC<RecurrenceSelectorProps> = ({
   config,
   onChange,
+  disabled = false,
 }) => {
   const theme = useTheme();
   const [modalVisible, setModalVisible] = useState(false);
@@ -52,15 +54,16 @@ export const RecurrenceSelector: React.FC<RecurrenceSelectorProps> = ({
             Será copiada automaticamente para os próximos meses
           </Text>
         </View>
-        <Switch value={config.isRecurring} onValueChange={handleToggle} />
+        <Switch value={config.isRecurring} onValueChange={handleToggle} disabled={disabled} />
       </View>
 
       {config.isRecurring && (
         <View style={styles.frequencyContainer}>
           <Chip
             icon={RECURRENCE_OPTIONS[config.frequency || 'mensal'].icon}
-            onPress={() => setModalVisible(true)}
+            onPress={() => !disabled && setModalVisible(true)}
             style={styles.frequencyChip}
+            disabled={disabled}
           >
             {RECURRENCE_OPTIONS[config.frequency || 'mensal'].label}
           </Chip>

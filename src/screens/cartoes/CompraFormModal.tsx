@@ -1,5 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import React, { useState, useEffect } from "react";
+import {
+  View,
+  StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+} from "react-native";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import {
   Portal,
   Modal,
@@ -10,9 +17,9 @@ import {
   useTheme,
   HelperText,
   Dialog,
-} from 'react-native-paper';
-import { Compra } from '../../types/month';
-import { evaluateFormula, formatCurrency } from '../../utils/calculations';
+} from "react-native-paper";
+import { Compra } from "../../types/month";
+import { evaluateFormula, formatCurrency } from "../../utils/calculations";
 
 interface CompraFormModalProps {
   visible: boolean;
@@ -25,6 +32,7 @@ interface CompraFormModalProps {
     parcelaAtual: number;
     parcelasTotal: number;
     marcado: boolean;
+    data?: Date;
   }) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
 }
@@ -38,13 +46,15 @@ export default function CompraFormModal({
   onDelete,
 }: CompraFormModalProps) {
   const theme = useTheme();
-  const [descricao, setDescricao] = useState('');
-  const [valorTotal, setValorTotal] = useState('');
-  const [parcelaAtual, setParcelaAtual] = useState('1');
-  const [parcelasTotal, setParcelasTotal] = useState('1');
+  const [descricao, setDescricao] = useState("");
+  const [valorTotal, setValorTotal] = useState("");
+  const [parcelaAtual, setParcelaAtual] = useState("1");
+  const [parcelasTotal, setParcelasTotal] = useState("1");
   const [marcado, setMarcado] = useState(true);
+  const [data, setData] = useState<Date>(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
   const [deleteDialogVisible, setDeleteDialogVisible] = useState(false);
 
   // Reset form when modal opens/closes or compra changes
@@ -56,15 +66,24 @@ export default function CompraFormModal({
         setParcelaAtual(String(compra.parcelaAtual));
         setParcelasTotal(String(compra.parcelasTotal));
         setMarcado(compra.marcado);
+        setData(
+          compra.data
+            ? compra.data instanceof Date
+              ? compra.data
+              : compra.data.toDate()
+            : new Date()
+        );
       } else {
-        setDescricao('');
-        setValorTotal('');
-        setParcelaAtual('1');
-        setParcelasTotal('1');
+        setDescricao("");
+        setValorTotal("");
+        setParcelaAtual("1");
+        setParcelasTotal("1");
         setMarcado(true);
+        setData(new Date());
       }
-      setError('');
+      setError("");
       setDeleteDialogVisible(false);
+      setShowDatePicker(false);
     }
   }, [visible, compra]);
 
@@ -80,39 +99,39 @@ export default function CompraFormModal({
 
   const validate = (): string | null => {
     if (!descricao.trim()) {
-      return 'Descrição é obrigatória';
+      return "Descrição é obrigatória";
     }
 
     if (descricao.trim().length < 3) {
-      return 'Descrição deve ter no mínimo 3 caracteres';
+      return "Descrição deve ter no mínimo 3 caracteres";
     }
 
     if (!valorTotal.trim()) {
-      return 'Valor é obrigatório';
+      return "Valor é obrigatório";
     }
 
     const calculated = getCalculatedValor();
     if (calculated === null) {
-      return 'Valor inválido';
+      return "Valor inválido";
     }
 
     if (calculated <= 0) {
-      return 'Valor deve ser maior que zero';
+      return "Valor deve ser maior que zero";
     }
 
     const parcelaAtualNum = parseInt(parcelaAtual);
     const parcelasTotalNum = parseInt(parcelasTotal);
 
     if (isNaN(parcelaAtualNum) || parcelaAtualNum < 1) {
-      return 'Parcela atual deve ser maior que zero';
+      return "Parcela atual deve ser maior que zero";
     }
 
     if (isNaN(parcelasTotalNum) || parcelasTotalNum < 1) {
-      return 'Total de parcelas deve ser maior que zero';
+      return "Total de parcelas deve ser maior que zero";
     }
 
     if (parcelaAtualNum > parcelasTotalNum) {
-      return 'Parcela atual não pode ser maior que o total';
+      return "Parcela atual não pode ser maior que o total";
     }
 
     return null;
@@ -126,12 +145,12 @@ export default function CompraFormModal({
     }
 
     setLoading(true);
-    setError('');
+    setError("");
 
     try {
       const valorCalculado = getCalculatedValor();
       if (valorCalculado === null) {
-        setError('Erro ao calcular valor');
+        setError("Erro ao calcular valor");
         return;
       }
 
@@ -141,10 +160,11 @@ export default function CompraFormModal({
         parcelaAtual: parseInt(parcelaAtual),
         parcelasTotal: parseInt(parcelasTotal),
         marcado,
+        data,
       });
       onDismiss();
     } catch (err: any) {
-      setError(err.message || 'Erro ao salvar compra');
+      setError(err.message || "Erro ao salvar compra");
     } finally {
       setLoading(false);
     }
@@ -163,7 +183,7 @@ export default function CompraFormModal({
       setDeleteDialogVisible(false);
       onDismiss();
     } catch (err: any) {
-      setError(err.message || 'Erro ao excluir compra');
+      setError(err.message || "Erro ao excluir compra");
       setDeleteDialogVisible(false);
     } finally {
       setLoading(false);
@@ -189,10 +209,10 @@ export default function CompraFormModal({
         ]}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <Text variant="headlineSmall" style={styles.title}>
-            {isEditMode ? 'Editar Compra' : 'Nova Compra'}
+            {isEditMode ? "Editar Compra" : "Nova Compra"}
           </Text>
 
           <TextInput
@@ -218,6 +238,33 @@ export default function CompraFormModal({
             style={styles.input}
             left={<TextInput.Icon icon="currency-usd" />}
           />
+
+          <Pressable onPress={() => !loading && setShowDatePicker(true)}>
+            <View pointerEvents="none">
+              <TextInput
+                label="Data da compra"
+                value={data.toLocaleDateString("pt-BR")}
+                mode="outlined"
+                editable={false}
+                style={styles.input}
+                left={<TextInput.Icon icon="calendar" />}
+              />
+            </View>
+          </Pressable>
+
+          {showDatePicker && (
+            <DateTimePicker
+              value={data}
+              mode="date"
+              display={Platform.OS === "ios" ? "spinner" : "default"}
+              onChange={(event, selectedDate) => {
+                setShowDatePicker(Platform.OS === "ios");
+                if (selectedDate) {
+                  setData(selectedDate);
+                }
+              }}
+            />
+          )}
 
           <View style={styles.parcelasRow}>
             <TextInput
@@ -292,7 +339,7 @@ export default function CompraFormModal({
                 disabled={loading}
                 style={styles.button}
               >
-                {isEditMode ? 'Salvar' : 'Adicionar'}
+                {isEditMode ? "Salvar" : "Adicionar"}
               </Button>
             </View>
           </View>
@@ -337,14 +384,14 @@ const styles = StyleSheet.create({
   },
   title: {
     marginBottom: 24,
-    fontWeight: 'bold',
+    fontWeight: "bold",
   },
   input: {
     marginBottom: 16,
   },
   parcelasRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 12,
   },
   parcelaInput: {
@@ -352,7 +399,7 @@ const styles = StyleSheet.create({
   },
   parcelasSeparator: {
     fontSize: 24,
-    fontWeight: 'bold',
+    fontWeight: "bold",
     marginBottom: 16,
   },
   helperText: {
@@ -360,19 +407,19 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   switchContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginVertical: 16,
   },
   buttons: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    justifyContent: "space-between",
     gap: 12,
     marginTop: 16,
   },
   rightButtons: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 12,
   },
   button: {

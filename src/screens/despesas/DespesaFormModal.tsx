@@ -13,12 +13,19 @@ import {
 } from 'react-native-paper';
 import { Despesa } from '../../types/month';
 import { evaluateFormula, formatCurrency } from '../../utils/calculations';
+import { RecurrenceSelector } from '../../components/RecurrenceSelector';
+import { RecurringExpenseConfig } from '../../types/recurring';
 
 interface DespesaFormModalProps {
   visible: boolean;
   despesa?: Despesa | null;
   onDismiss: () => void;
-  onSave: (data: { nome: string; valorPlanejado: string; pago: boolean }) => Promise<void>;
+  onSave: (data: {
+    nome: string;
+    valorPlanejado: string;
+    pago: boolean;
+    recurring?: RecurringExpenseConfig;
+  }) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
 }
 
@@ -33,6 +40,9 @@ export default function DespesaFormModal({
   const [nome, setNome] = useState('');
   const [valorPlanejado, setValorPlanejado] = useState('');
   const [pago, setPago] = useState(false);
+  const [recurring, setRecurring] = useState<RecurringExpenseConfig>({
+    isRecurring: false,
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [deleteDialogVisible, setDeleteDialogVisible] = useState(false);
@@ -44,10 +54,12 @@ export default function DespesaFormModal({
         setNome(despesa.nome);
         setValorPlanejado(String(despesa.valorPlanejado));
         setPago(despesa.pago);
+        setRecurring(despesa.recurring || { isRecurring: false });
       } else {
         setNome('');
         setValorPlanejado('');
         setPago(false);
+        setRecurring({ isRecurring: false });
       }
       setError('');
       setDeleteDialogVisible(false);
@@ -104,6 +116,7 @@ export default function DespesaFormModal({
         nome: nome.trim(),
         valorPlanejado,
         pago,
+        recurring: recurring.isRecurring ? recurring : undefined,
       });
       onDismiss();
     } catch (err: any) {
@@ -198,6 +211,12 @@ export default function DespesaFormModal({
               color={theme.colors.primary}
             />
           </View>
+
+          <RecurrenceSelector
+            config={recurring}
+            onChange={setRecurring}
+            disabled={loading}
+          />
 
           <View style={styles.buttons}>
             {isEditMode && onDelete && (

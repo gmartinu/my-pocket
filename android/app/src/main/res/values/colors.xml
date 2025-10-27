@@ -1,0 +1,9 @@
+<resources>
+  <color name="splashscreen_background">#ffffff</color>
+  <color name="iconBackground">#ffffff</color>
+  <color name="colorPrimary">#023c69</color>
+  <color name="colorPrimaryDark">#ffffff</color>
+  <color name="datePicker_colorAccent">#4CAF50</color>
+  <color name="datePicker_textColorPrimary">#212121</color>
+  <color name="datePicker_windowBackground">#FFFFFF</color>
+</resources>

@@ -1,4 +1,5 @@
 import { Timestamp } from 'firebase/firestore';
+import { RecurringExpenseConfig } from './recurring';
 
 // Compra (Purchase) - individual purchase on a card
 export interface Compra {
@@ -8,6 +9,9 @@ export interface Compra {
   parcelaAtual: number;
   parcelasTotal: number;
   marcado: boolean;
+  purchaseGroupId?: string; // Links installments of the same purchase across months
+  createdFromInstallment?: boolean; // True if auto-generated from installment logic
+  data?: Date | Timestamp; // Date of purchase
 }
 
 // Cartao (Credit Card)
@@ -27,6 +31,7 @@ export interface Despesa {
   valorCalculado: number; // Calculated from valorPlanejado
   pago: boolean;
   createdAt: Date | Timestamp;
+  recurring?: RecurringExpenseConfig; // Configuration for recurring expenses
 }
 
 // Month

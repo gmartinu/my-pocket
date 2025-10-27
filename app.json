@@ -21,10 +21,34 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.gmartinu.mypocket"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "@react-native-community/datetimepicker",
+        {
+          "android": {
+            "datePicker": {
+              "colorAccent": {
+                "light": "#4CAF50",
+                "dark": "#66BB6A"
+              },
+              "textColorPrimary": {
+                "light": "#212121",
+                "dark": "#E0E0E0"
+              },
+              "windowBackground": {
+                "light": "#FFFFFF",
+                "dark": "#1E1E1E"
+              }
+            }
+          }
+        }
+      ]
+    ]
   }
 }

@@ -1,18 +1,25 @@
-import React from 'react';
-import { StyleSheet, ScrollView, View, ActivityIndicator } from 'react-native';
-import { Text, Surface, useTheme, Button, Banner, IconButton } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { MainTabNavigationProp } from '../../types/navigation';
-import WorkspaceSelector from '../../components/WorkspaceSelector';
-import MonthSelector from '../../components/MonthSelector';
-import BalanceCard from '../../components/BalanceCard';
-import SummaryCard from '../../components/SummaryCard';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
-import { useMonth } from '../../hooks/useMonth';
-import { useSync } from '../../contexts/SyncContext';
-import { formatCurrency } from '../../utils/calculations';
-import { getNextMonthId, formatMonthName } from '../../utils/dateUtils';
+import React from "react";
+import { StyleSheet, ScrollView, View, ActivityIndicator } from "react-native";
+import {
+  Text,
+  Surface,
+  useTheme,
+  Button,
+  Banner,
+  IconButton,
+} from "react-native-paper";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
+import { MainTabNavigationProp } from "../../types/navigation";
+import WorkspaceSelector from "../../components/WorkspaceSelector";
+import MonthSelector from "../../components/MonthSelector";
+import BalanceCard from "../../components/BalanceCard";
+import SummaryCard from "../../components/SummaryCard";
+import { useWorkspace } from "../../contexts/WorkspaceContext";
+import { useMonth } from "../../hooks/useMonth";
+import { useSync } from "../../contexts/SyncContext";
+import { formatCurrency } from "../../utils/calculations";
+import { getNextMonthId, formatMonthName } from "../../utils/dateUtils";
 
 export default function DashboardScreen() {
   const theme = useTheme();
@@ -42,7 +49,7 @@ export default function DashboardScreen() {
     return (
       <SafeAreaView
         style={[styles.container, { backgroundColor: theme.colors.background }]}
-        edges={['top']}
+        edges={["top"]}
       >
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
@@ -56,7 +63,7 @@ export default function DashboardScreen() {
     return (
       <SafeAreaView
         style={[styles.container, { backgroundColor: theme.colors.background }]}
-        edges={['top']}
+        edges={["top"]}
       >
         <View style={styles.loadingContainer}>
           <Text>Erro ao carregar mês</Text>
@@ -71,30 +78,30 @@ export default function DashboardScreen() {
   // Get sync status icon and color
   const getSyncIcon = () => {
     switch (syncStatus) {
-      case 'syncing':
-        return 'cloud-sync';
-      case 'error':
-        return 'cloud-off-outline';
+      case "syncing":
+        return "cloud-sync";
+      case "error":
+        return "cloud-off-outline";
       default:
-        return 'cloud-check-outline';
+        return "cloud-check-outline";
     }
   };
 
   const getSyncColor = () => {
     switch (syncStatus) {
-      case 'syncing':
+      case "syncing":
         return theme.colors.primary;
-      case 'error':
-        return '#F44336';
+      case "error":
+        return theme.colors.error;
       default:
-        return '#4CAF50';
+        return theme.colors.primary;
     }
   };
 
   return (
     <SafeAreaView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
-      edges={['top']}
+      edges={["top"]}
     >
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* Offline Banner */}
@@ -104,7 +111,7 @@ export default function DashboardScreen() {
           </Banner>
         )}
 
-        <SafeAreaView style={styles.header} edges={['left', 'right']}>
+        <SafeAreaView style={styles.header} edges={["left", "right"]}>
           <View style={styles.headerLeft}>
             <Text variant="headlineMedium" style={styles.title}>
               Dashboard
@@ -119,7 +126,7 @@ export default function DashboardScreen() {
           <WorkspaceSelector />
         </SafeAreaView>
 
-        <SafeAreaView style={styles.content} edges={['left', 'right']}>
+        <SafeAreaView style={styles.content} edges={["left", "right"]}>
           {/* Month Selector */}
           <MonthSelector
             monthId={currentMonthId}
@@ -152,7 +159,9 @@ export default function DashboardScreen() {
                 mode="contained-tonal"
                 icon="receipt"
                 style={styles.actionButton}
-                onPress={() => navigation.navigate('Despesas')}
+                buttonColor={theme.colors.primaryContainer}
+                textColor={theme.colors.onPrimaryContainer}
+                onPress={() => navigation.navigate("Despesas")}
               >
                 Despesas
               </Button>
@@ -160,7 +169,9 @@ export default function DashboardScreen() {
                 mode="contained-tonal"
                 icon="credit-card"
                 style={styles.actionButton}
-                onPress={() => navigation.navigate('Cartoes')}
+                buttonColor={theme.colors.primaryContainer}
+                textColor={theme.colors.onPrimaryContainer}
+                onPress={() => navigation.navigate("Cartoes")}
               >
                 Cartões
               </Button>
@@ -178,7 +189,12 @@ export default function DashboardScreen() {
                 variant="titleMedium"
                 style={[
                   styles.projectionValue,
-                  { color: month.sobra >= 0 ? '#4CAF50' : '#F44336' },
+                  {
+                    color:
+                      month.sobra >= 0
+                        ? theme.colors.primary
+                        : theme.colors.error,
+                  },
                 ]}
               >
                 {formatCurrency(month.sobra)}
@@ -186,31 +202,6 @@ export default function DashboardScreen() {
             </View>
             <Text variant="bodySmall" style={styles.projectionNote}>
               Baseado na sobra do mês atual
-            </Text>
-          </Surface>
-
-          {/* Phase Progress */}
-          <Surface style={styles.surface} elevation={1}>
-            <Text variant="titleMedium" style={styles.sectionTitle}>
-              Progresso do Projeto
-            </Text>
-            <Text variant="bodyMedium" style={styles.featureText}>
-              ✅ Autenticação (Fase 1)
-            </Text>
-            <Text variant="bodyMedium" style={styles.featureText}>
-              ✅ Workspaces (Fase 2)
-            </Text>
-            <Text variant="bodyMedium" style={styles.featureText}>
-              ✅ Dashboard e Meses (Fase 3)
-            </Text>
-            <Text variant="bodyMedium" style={styles.featureText}>
-              ✅ Despesas CRUD (Fase 4)
-            </Text>
-            <Text variant="bodyMedium" style={styles.featureText}>
-              ✅ Cartões de Crédito (Fase 5)
-            </Text>
-            <Text variant="bodyMedium" style={styles.featureText}>
-              ✅ Sincronização em Tempo Real (Fase 7)
             </Text>
           </Surface>
         </SafeAreaView>
@@ -228,27 +219,27 @@ const styles = StyleSheet.create({
   },
   loadingContainer: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
   },
   loadingText: {
     marginTop: 16,
     opacity: 0.7,
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     padding: 16,
     paddingBottom: 8,
   },
   headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 4,
   },
   title: {
-    fontWeight: 'bold',
+    fontWeight: "bold",
   },
   content: {
     padding: 16,
@@ -261,10 +252,10 @@ const styles = StyleSheet.create({
   },
   actionsTitle: {
     marginBottom: 16,
-    fontWeight: 'bold',
+    fontWeight: "bold",
   },
   actionsRow: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 12,
   },
   actionButton: {
@@ -277,17 +268,17 @@ const styles = StyleSheet.create({
   },
   projectionTitle: {
     marginBottom: 16,
-    fontWeight: 'bold',
-    textTransform: 'capitalize',
+    fontWeight: "bold",
+    textTransform: "capitalize",
   },
   projectionRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 8,
   },
   projectionValue: {
-    fontWeight: 'bold',
+    fontWeight: "bold",
   },
   projectionNote: {
     opacity: 0.6,
@@ -300,7 +291,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     marginBottom: 16,
-    fontWeight: 'bold',
+    fontWeight: "bold",
   },
   featureText: {
     marginBottom: 8,
