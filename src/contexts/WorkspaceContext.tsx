@@ -1,35 +1,70 @@
-import React, { createContext, useState, useEffect, useContext } from 'react';
+import React, { createContext, useState, useEffect, useContext } from "react";
+import { RealtimeChannel } from "@supabase/supabase-js";
+import { supabase } from "../config/supabase";
+import { useAuth } from "./AuthContext";
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  serverTimestamp,
-  arrayUnion,
-  arrayRemove,
-  query,
-  where,
-  limit,
-  onSnapshot,
-} from 'firebase/firestore';
-import { db } from '../config/firebase';
-import { useAuth } from './AuthContext';
-import { Workspace, WorkspaceContextData, WorkspaceRole } from '../types/workspace';
+  Workspace,
+  WorkspaceMember,
+  WorkspaceInsert,
+  WorkspaceRole,
+} from "../types/supabase";
+
+// Helper function to normalize workspace from Supabase to expected format
+function normalizeWorkspace(workspace: any): any {
+  return {
+    ...workspace,
+    owner: workspace.owner_id,
+    createdAt: workspace.created_at,
+    updatedAt: workspace.updated_at,
+    members: workspace.members || [],
+  };
+}
+
+// Workspace Context Data
+export interface WorkspaceContextData {
+  workspaces: any[];
+  activeWorkspace: any | null;
+  loading: boolean;
+  createWorkspace: (name: string) => Promise<void>;
+  selectWorkspace: (workspaceId: string) => Promise<void>;
+  updateWorkspace: (workspaceId: string, data: Partial<any>) => Promise<void>;
+  deleteWorkspace: (workspaceId: string) => Promise<void>;
+  refreshWorkspaces: () => Promise<void>;
+  addMember: (
+    workspaceId: string,
+    userId: string,
+    email: string,
+    displayName: string,
+    role: WorkspaceRole
+  ) => Promise<void>;
+  removeMember: (workspaceId: string, userId: string) => Promise<void>;
+  changeMemberRole: (
+    workspaceId: string,
+    userId: string,
+    role: WorkspaceRole
+  ) => Promise<void>;
+  findUserByEmail: (
+    email: string
+  ) => Promise<{ id: string; email: string; displayName: string } | null>;
+}
 
 // Create context
-const WorkspaceContext = createContext<WorkspaceContextData>({} as WorkspaceContextData);
+const WorkspaceContext = createContext<WorkspaceContextData>(
+  {} as WorkspaceContextData
+);
 
 // Provider component
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
+  const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(
+    null
+  );
   const [loading, setLoading] = useState(true);
+  const [realtimeChannel, setRealtimeChannel] =
+    useState<RealtimeChannel | null>(null);
 
-  // Set up real-time listener for user's workspaces
+  // Load workspaces when user changes
   useEffect(() => {
     if (!user) {
       setWorkspaces([]);
@@ -38,143 +73,143 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    setLoading(true);
-
-    const userRef = doc(db, 'users', user.uid);
-
-    // Listen to user document for workspace list changes
-    const unsubscribe = onSnapshot(
-      userRef,
-      async (snapshot) => {
-        if (snapshot.exists()) {
-          const userData = snapshot.data();
-          const workspaceIds: string[] = userData?.workspaces || [];
-          const activeWorkspaceId: string | null = userData?.activeWorkspace || null;
-
-          if (workspaceIds.length === 0) {
-            setWorkspaces([]);
-            setActiveWorkspace(null);
-            setLoading(false);
-            return;
-          }
-
-          // Fetch all workspace documents
-          const workspacePromises = workspaceIds.map((id) => getDoc(doc(db, 'workspaces', id)));
-          const workspaceDocs = await Promise.all(workspacePromises);
-
-          // Convert to Workspace objects
-          const loadedWorkspaces: Workspace[] = workspaceDocs
-            .filter((doc) => doc.exists())
-            .map((doc) => ({
-              id: doc.id,
-              ...doc.data(),
-            })) as Workspace[];
-
-          setWorkspaces(loadedWorkspaces);
-
-          // Set active workspace if available
-          if (activeWorkspaceId) {
-            const active = loadedWorkspaces.find((w) => w.id === activeWorkspaceId);
-            setActiveWorkspace(active || null);
-          }
-
-          setLoading(false);
-        } else {
-          setWorkspaces([]);
-          setActiveWorkspace(null);
-          setLoading(false);
-        }
-      },
-      (error) => {
-        console.error('Error listening to user workspaces:', error);
-        setLoading(false);
-      }
-    );
-
-    // Cleanup listener
-    return () => unsubscribe();
+    loadWorkspaces();
   }, [user]);
 
-  // Set up real-time listener for active workspace details
+  // Setup real-time subscriptions for workspace changes
   useEffect(() => {
-    if (!activeWorkspace?.id) {
+    if (!user) {
+      // Cleanup subscription if user logs out
+      if (realtimeChannel) {
+        supabase.removeChannel(realtimeChannel);
+        setRealtimeChannel(null);
+      }
       return;
     }
 
-    const workspaceRef = doc(db, 'workspaces', activeWorkspace.id);
-
-    // Listen to active workspace for real-time updates
-    const unsubscribe = onSnapshot(
-      workspaceRef,
-      (snapshot) => {
-        if (snapshot.exists()) {
-          const updatedWorkspace = { id: snapshot.id, ...snapshot.data() } as Workspace;
-          setActiveWorkspace(updatedWorkspace);
-
-          // Also update in the workspaces list
-          setWorkspaces((prev) =>
-            prev.map((w) => (w.id === snapshot.id ? updatedWorkspace : w))
-          );
+    // Subscribe to workspace changes
+    const channel = supabase
+      .channel("workspace-changes")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "workspaces",
+          filter: `owner_id=eq.${user.id}`,
+        },
+        (payload) => {
+          console.log("🔄 Workspace changed:", payload);
+          loadWorkspaces();
         }
-      },
-      (error) => {
-        console.error('Error listening to active workspace:', error);
-      }
-    );
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "workspace_members",
+          filter: `user_id=eq.${user.id}`,
+        },
+        (payload) => {
+          console.log("🔄 Membership changed:", payload);
+          loadWorkspaces();
+        }
+      )
+      .subscribe();
 
-    // Cleanup listener
-    return () => unsubscribe();
-  }, [activeWorkspace?.id]);
+    setRealtimeChannel(channel);
+
+    // Cleanup
+    return () => {
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, [user]);
 
   /**
    * Load all workspaces for the current user
    */
   async function loadWorkspaces() {
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
     try {
       setLoading(true);
 
-      // Get user document to find workspace IDs
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-      const userData = userDoc.data();
+      // Query workspaces where user is owner or member
+      const { data: ownedWorkspaces, error: ownedError } = await supabase
+        .from("workspaces")
+        .select("*")
+        .eq("owner_id", user.id);
 
-      if (!userData) {
-        setLoading(false);
-        return;
+      if (ownedError) throw ownedError;
+
+      // Query workspaces where user is a member
+      const { data: memberWorkspaces, error: memberError } = await supabase
+        .from("workspace_members")
+        .select("workspace_id")
+        .eq("user_id", user.id);
+
+      if (memberError) throw memberError;
+
+      // Get full workspace data for member workspaces
+      const memberWorkspaceIds =
+        memberWorkspaces?.map((m: any) => m.workspace_id) || [];
+      let memberWorkspacesData: any[] = [];
+
+      if (memberWorkspaceIds.length > 0) {
+        const { data, error } = await supabase
+          .from("workspaces")
+          .select("*")
+          .in("id", memberWorkspaceIds);
+
+        if (error) throw error;
+        memberWorkspacesData = data || [];
       }
 
-      const workspaceIds: string[] = userData.workspaces || [];
-      const activeWorkspaceId: string | null = userData.activeWorkspace || null;
+      // Combine and deduplicate
+      const allWorkspaces = [
+        ...(ownedWorkspaces || []),
+        ...memberWorkspacesData,
+      ];
+      const uniqueWorkspaces: any[] = Array.from(
+        new Map(allWorkspaces.map((w: any) => [w.id, w])).values()
+      );
 
-      if (workspaceIds.length === 0) {
-        setWorkspaces([]);
-        setActiveWorkspace(null);
-        setLoading(false);
-        return;
+      // Normalize workspaces
+      const normalizedWorkspaces = uniqueWorkspaces.map(normalizeWorkspace);
+      setWorkspaces(normalizedWorkspaces);
+
+      // Get user's active workspace
+      const { data: activeWorkspaceData, error: activeError } = await supabase
+        .from("user_active_workspace")
+        .select("workspace_id")
+        .eq("user_id", user.id)
+        .single();
+
+      if (activeError && activeError.code !== "PGRST116") {
+        // PGRST116 = no rows returned
+        throw activeError;
       }
 
-      // Fetch all workspace documents
-      const workspacePromises = workspaceIds.map((id) => getDoc(doc(db, 'workspaces', id)));
-      const workspaceDocs = await Promise.all(workspacePromises);
-
-      // Convert to Workspace objects
-      const loadedWorkspaces: Workspace[] = workspaceDocs
-        .filter((doc) => doc.exists())
-        .map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as Workspace[];
-
-      setWorkspaces(loadedWorkspaces);
-
-      // Set active workspace if available
-      if (activeWorkspaceId) {
-        const active = loadedWorkspaces.find((w) => w.id === activeWorkspaceId);
+      if (activeWorkspaceData?.workspace_id) {
+        const active = normalizedWorkspaces.find(
+          (w: any) => w.id === activeWorkspaceData.workspace_id
+        );
         setActiveWorkspace(active || null);
+      } else if (normalizedWorkspaces.length > 0) {
+        // Set first workspace as active if none is set
+        setActiveWorkspace(normalizedWorkspaces[0]);
+        await selectWorkspace(normalizedWorkspaces[0].id);
+      } else {
+        setActiveWorkspace(null);
       }
-    } catch (error) {
-      console.error('Error loading workspaces:', error);
+    } catch (error: any) {
+      console.error("❌ Error loading workspaces:", error);
     } finally {
       setLoading(false);
     }
@@ -184,61 +219,78 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
    * Create a new workspace
    */
   async function createWorkspace(name: string): Promise<void> {
-    if (!user) throw new Error('User not authenticated');
+    if (!user) throw new Error("User not authenticated");
 
-    // Create workspace document
-    const workspaceRef = doc(collection(db, 'workspaces'));
-    const now = new Date();
-    const newWorkspace: Omit<Workspace, 'id'> = {
-      name: name.trim(),
-      owner: user.uid,
-      members: [{
-        userId: user.uid,
-        email: user.email || '',
-        displayName: user.displayName || user.email || 'User',
-        role: 'owner',
-        addedAt: now,
-      }],
-      createdAt: now,
-      updatedAt: now,
-    };
+    try {
+      // Create workspace
+      const { data: newWorkspace, error: workspaceError } = await supabase
+        .from("workspaces")
+        .insert({
+          name: name.trim(),
+          owner_id: user.id,
+        } as any)
+        .select()
+        .single();
 
-    await setDoc(workspaceRef, newWorkspace);
+      if (workspaceError) throw workspaceError;
+      if (!newWorkspace) throw new Error("Failed to create workspace");
 
-    // Update user document - use setDoc with merge to handle if document doesn't exist
-    const userRef = doc(db, 'users', user.uid);
-    const updateData: any = {
-      workspaces: arrayUnion(workspaceRef.id),
-    };
+      console.log("✅ Workspace created:", newWorkspace.id);
 
-    // If this is the first workspace, set it as active
-    if (workspaces.length === 0) {
-      updateData.activeWorkspace = workspaceRef.id;
+      // Add owner as member
+      const { error: memberError } = await supabase
+        .from("workspace_members")
+        .insert({
+          workspace_id: newWorkspace.id,
+          user_id: user.id,
+          email: user.email || "",
+          display_name:
+            user.user_metadata?.display_name || user.email || "User",
+          role: "owner",
+        } as any);
+
+      if (memberError) {
+        console.warn("⚠️  Could not add owner as member:", memberError);
+      }
+
+      // If this is the first workspace, set it as active
+      if (workspaces.length === 0) {
+        await selectWorkspace(newWorkspace.id);
+      }
+
+      // Reload workspaces
+      await loadWorkspaces();
+    } catch (error: any) {
+      console.error("❌ Error creating workspace:", error);
+      throw new Error(error.message || "Erro ao criar workspace");
     }
-
-    // Use setDoc with merge: true to create or update the document
-    await setDoc(userRef, updateData, { merge: true });
-
-    // Reload workspaces
-    await loadWorkspaces();
   }
 
   /**
    * Select a workspace as active
    */
   async function selectWorkspace(workspaceId: string): Promise<void> {
-    if (!user) throw new Error('User not authenticated');
+    if (!user) throw new Error("User not authenticated");
 
-    // Update user document
-    const userRef = doc(db, 'users', user.uid);
-    await setDoc(userRef, {
-      activeWorkspace: workspaceId,
-    }, { merge: true });
+    try {
+      // Update user's active workspace
+      const { error } = await supabase.from("user_active_workspace").upsert({
+        user_id: user.id,
+        workspace_id: workspaceId,
+      } as any);
 
-    // Update local state
-    const selected = workspaces.find((w) => w.id === workspaceId);
-    if (selected) {
-      setActiveWorkspace(selected);
+      if (error) throw error;
+
+      console.log("✅ Active workspace set:", workspaceId);
+
+      // Update local state
+      const selected = workspaces.find((w) => w.id === workspaceId);
+      if (selected) {
+        setActiveWorkspace(selected as any);
+      }
+    } catch (error: any) {
+      console.error("❌ Error selecting workspace:", error);
+      throw new Error(error.message || "Erro ao selecionar workspace");
     }
   }
 
@@ -249,56 +301,69 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     workspaceId: string,
     data: Partial<Workspace>
   ): Promise<void> {
-    if (!user) throw new Error('User not authenticated');
+    if (!user) throw new Error("User not authenticated");
 
-    const workspaceRef = doc(db, 'workspaces', workspaceId);
+    try {
+      const { error } = await supabase
+        .from("workspaces")
+        .update({
+          name: data.name,
+          // updated_at is set automatically by trigger
+        } as any)
+        .eq("id", workspaceId)
+        .eq("owner_id", user.id); // Only owner can update
 
-    // Remove id from update data if present
-    const { id, createdAt, ...updateData } = data as any;
+      if (error) throw error;
 
-    await updateDoc(workspaceRef, {
-      ...updateData,
-      updatedAt: serverTimestamp(),
-    });
+      console.log("✅ Workspace updated:", workspaceId);
 
-    // Reload workspaces
-    await loadWorkspaces();
+      // Reload workspaces
+      await loadWorkspaces();
+    } catch (error: any) {
+      console.error("❌ Error updating workspace:", error);
+      throw new Error(error.message || "Erro ao atualizar workspace");
+    }
   }
 
   /**
    * Delete a workspace
    */
   async function deleteWorkspace(workspaceId: string): Promise<void> {
-    if (!user) throw new Error('User not authenticated');
+    if (!user) throw new Error("User not authenticated");
 
-    // Check if user is owner
-    const workspace = workspaces.find((w) => w.id === workspaceId);
-    if (!workspace || workspace.owner !== user.uid) {
-      throw new Error('Only the owner can delete this workspace');
+    try {
+      // Check if user is owner
+      const workspace = workspaces.find((w) => w.id === workspaceId);
+      if (!workspace || workspace.owner_id !== user.id) {
+        throw new Error("Only the owner can delete this workspace");
+      }
+
+      // Delete workspace (cascade will handle members, months, etc.)
+      const { error } = await supabase
+        .from("workspaces")
+        .delete()
+        .eq("id", workspaceId)
+        .eq("owner_id", user.id);
+
+      if (error) throw error;
+
+      console.log("✅ Workspace deleted:", workspaceId);
+
+      // If deleting active workspace, clear it
+      if (activeWorkspace?.id === workspaceId) {
+        setActiveWorkspace(null);
+      }
+
+      // Reload workspaces
+      await loadWorkspaces();
+    } catch (error: any) {
+      console.error("❌ Error deleting workspace:", error);
+      throw new Error(error.message || "Erro ao deletar workspace");
     }
-
-    // Delete workspace document
-    await deleteDoc(doc(db, 'workspaces', workspaceId));
-
-    // Update user document
-    const userRef = doc(db, 'users', user.uid);
-    const updateData: any = {
-      workspaces: arrayRemove(workspaceId),
-    };
-
-    // If deleting active workspace, clear it
-    if (activeWorkspace?.id === workspaceId) {
-      updateData.activeWorkspace = null;
-    }
-
-    await setDoc(userRef, updateData, { merge: true });
-
-    // Reload workspaces
-    await loadWorkspaces();
   }
 
   /**
-   * Refresh workspaces from Firestore
+   * Refresh workspaces from Supabase
    */
   async function refreshWorkspaces(): Promise<void> {
     await loadWorkspaces();
@@ -310,44 +375,32 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   async function findUserByEmail(
     email: string
   ): Promise<{ id: string; email: string; displayName: string } | null> {
-    if (!user) throw new Error('User not authenticated');
+    if (!user) throw new Error("User not authenticated");
 
     try {
-      console.log('🔍 [findUserByEmail] Buscando email:', email.toLowerCase().trim());
+      // In Supabase, we need to use the service_role key to query auth.users
+      // For now, we'll search in workspace_members table
+      const { data, error } = await supabase
+        .from("workspace_members")
+        .select("user_id, email, display_name")
+        .eq("email", email.toLowerCase().trim())
+        .limit(1)
+        .single();
 
-      const q = query(
-        collection(db, 'users'),
-        where('email', '==', email.toLowerCase().trim()),
-        limit(1)
-      );
-
-      const snapshot = await getDocs(q);
-      console.log('📊 [findUserByEmail] Documentos encontrados:', snapshot.size);
-
-      if (snapshot.empty) {
-        console.log('❌ [findUserByEmail] Nenhum usuário encontrado');
-        return null;
+      if (error && error.code !== "PGRST116") {
+        throw error;
       }
 
-      const userDoc = snapshot.docs[0];
-      const userData = userDoc.data();
-      console.log('📄 [findUserByEmail] Dados do usuário:', {
-        id: userDoc.id,
-        email: userData.email,
-        displayName: userData.displayName,
-        name: userData.name,
-      });
+      if (!data) return null;
 
-      // Use displayName, fallback to name, then email
-      const displayName = userData.displayName || userData.name || userData.email || 'User';
-
+      const typedData = data as any;
       return {
-        id: userDoc.id,
-        email: userData.email || '',
-        displayName,
+        id: typedData.user_id,
+        email: typedData.email,
+        displayName: typedData.display_name,
       };
-    } catch (error) {
-      console.error('❌ [findUserByEmail] Erro:', error);
+    } catch (error: any) {
+      console.error("❌ Error finding user:", error);
       return null;
     }
   }
@@ -362,70 +415,56 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     displayName: string,
     role: WorkspaceRole
   ): Promise<void> {
-    if (!user) throw new Error('User not authenticated');
+    if (!user) throw new Error("User not authenticated");
 
-    const workspaceRef = doc(db, 'workspaces', workspaceId);
-
-    // Add to members array
-    await updateDoc(workspaceRef, {
-      members: arrayUnion({
-        userId,
+    try {
+      // Add to workspace_members
+      const { error } = await supabase.from("workspace_members").insert({
+        workspace_id: workspaceId,
+        user_id: userId,
         email,
-        displayName,
+        display_name: displayName,
         role,
-        addedAt: new Date(),
-      }),
-      updatedAt: serverTimestamp(),
-    });
+      });
 
-    // Add workspace to user's workspaces array
-    const userRef = doc(db, 'users', userId);
-    await setDoc(
-      userRef,
-      {
-        workspaces: arrayUnion(workspaceId),
-      },
-      { merge: true }
-    );
+      if (error) throw error;
 
-    // Reload workspaces
-    await loadWorkspaces();
+      console.log("✅ Member added:", email);
+
+      // Reload workspaces
+      await loadWorkspaces();
+    } catch (error: any) {
+      console.error("❌ Error adding member:", error);
+      throw new Error(error.message || "Erro ao adicionar membro");
+    }
   }
 
   /**
    * Remove member from workspace
    */
-  async function removeMember(workspaceId: string, userId: string): Promise<void> {
-    if (!user) throw new Error('User not authenticated');
+  async function removeMember(
+    workspaceId: string,
+    userId: string
+  ): Promise<void> {
+    if (!user) throw new Error("User not authenticated");
 
-    // Get workspace to find member object
-    const workspaceRef = doc(db, 'workspaces', workspaceId);
-    const workspaceSnap = await getDoc(workspaceRef);
-    const workspaceData = workspaceSnap.data();
+    try {
+      const { error } = await supabase
+        .from("workspace_members")
+        .delete()
+        .eq("workspace_id", workspaceId)
+        .eq("user_id", userId);
 
-    if (!workspaceData) throw new Error('Workspace not found');
+      if (error) throw error;
 
-    // Filter out the member to remove
-    const updatedMembers = workspaceData.members.filter((m: any) => m.userId !== userId);
+      console.log("✅ Member removed");
 
-    await updateDoc(workspaceRef, {
-      members: updatedMembers,
-      updatedAt: serverTimestamp(),
-    });
-
-    // Remove workspace from user's workspaces array
-    const userRef = doc(db, 'users', userId);
-    await setDoc(
-      userRef,
-      {
-        workspaces: arrayRemove(workspaceId),
-        activeWorkspace: null, // Clear if it was active
-      },
-      { merge: true }
-    );
-
-    // Reload workspaces
-    await loadWorkspaces();
+      // Reload workspaces
+      await loadWorkspaces();
+    } catch (error: any) {
+      console.error("❌ Error removing member:", error);
+      throw new Error(error.message || "Erro ao remover membro");
+    }
   }
 
   /**
@@ -436,27 +475,25 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     userId: string,
     newRole: WorkspaceRole
   ): Promise<void> {
-    if (!user) throw new Error('User not authenticated');
+    if (!user) throw new Error("User not authenticated");
 
-    // Get workspace to update member
-    const workspaceRef = doc(db, 'workspaces', workspaceId);
-    const workspaceSnap = await getDoc(workspaceRef);
-    const workspaceData = workspaceSnap.data();
+    try {
+      const { error } = await supabase
+        .from("workspace_members")
+        .update({ role: newRole })
+        .eq("workspace_id", workspaceId)
+        .eq("user_id", userId);
 
-    if (!workspaceData) throw new Error('Workspace not found');
+      if (error) throw error;
 
-    // Update role of the specific member
-    const updatedMembers = workspaceData.members.map((m: any) =>
-      m.userId === userId ? { ...m, role: newRole } : m
-    );
+      console.log("✅ Member role changed");
 
-    await updateDoc(workspaceRef, {
-      members: updatedMembers,
-      updatedAt: serverTimestamp(),
-    });
-
-    // Reload workspaces
-    await loadWorkspaces();
+      // Reload workspaces
+      await loadWorkspaces();
+    } catch (error: any) {
+      console.error("❌ Error changing member role:", error);
+      throw new Error(error.message || "Erro ao alterar papel do membro");
+    }
   }
 
   return (
@@ -486,7 +523,7 @@ export function useWorkspace(): WorkspaceContextData {
   const context = useContext(WorkspaceContext);
 
   if (!context) {
-    throw new Error('useWorkspace must be used within a WorkspaceProvider');
+    throw new Error("useWorkspace must be used within a WorkspaceProvider");
   }
 
   return context;

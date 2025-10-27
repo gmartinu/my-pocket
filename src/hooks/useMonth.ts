@@ -1,55 +1,38 @@
-import { useState, useEffect, useCallback } from 'react';
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp, onSnapshot, writeBatch } from 'firebase/firestore';
-import { db } from '../config/firebase';
-import { useWorkspace } from '../contexts/WorkspaceContext';
-import { Month, Despesa, Cartao, Compra } from '../types/month';
-import {
-  getCurrentMonthId,
-  formatMonthName,
-  getNextMonthId,
-  getPreviousMonthId,
-  parseMonthId,
-  isValidMonthId,
-} from '../utils/dateUtils';
-import {
-  calculateTotalDespesas,
-  calculateTotalCartoes,
-  calculateSobra,
-  calculateTotalFatura,
-  evaluateFormula,
-} from '../utils/calculations';
-
 /**
- * Remove undefined values from objects before saving to Firestore
- * Firestore does not accept undefined values, so we need to remove them
+ * VERSÃO 2 - SQLite-first approach
+ * Este hook usa SQLite como fonte primária de dados
  */
-function sanitizeForFirestore<T>(obj: T): T {
-  if (obj === null || obj === undefined) {
-    return obj;
-  }
 
-  if (Array.isArray(obj)) {
-    return obj.map(item => sanitizeForFirestore(item)) as T;
-  }
-
-  if (typeof obj === 'object' && obj.constructor === Object) {
-    const sanitized: any = {};
-    for (const key in obj) {
-      if (obj.hasOwnProperty(key)) {
-        const value = (obj as any)[key];
-        if (value !== undefined) {
-          sanitized[key] = sanitizeForFirestore(value);
-        }
-      }
-    }
-    return sanitized as T;
-  }
-
-  return obj;
-}
+import { useState, useEffect, useCallback } from "react";
+import { useWorkspace } from "../contexts/WorkspaceContext";
+import { useMonthNavigation } from "../contexts/MonthNavigationContext";
+import { useRecurringTemplates } from "./useRecurringTemplates";
+import { useSyncContext } from "../contexts/SyncContext";
+import { generateUUID } from "../utils/uuid";
+import { dataEvents } from "../utils/dataEvents";
+import * as syncOps from "../services/syncOperations";
+import type {
+  Month,
+  MonthInsert,
+  ExpenseInstance,
+  ExpenseInstanceInsert,
+  Card,
+  CardInsert,
+  Purchase,
+  PurchaseInsert,
+  CardWithPurchases,
+} from "../types/supabase";
+import {
+  formatMonthName,
+  parseMonthId,
+} from "../utils/dateUtils";
+import { evaluateFormula } from "../utils/calculations";
+import * as db from "../services/database/operations";
 
 export interface UseMonthReturn {
   month: Month | null;
+  expenses: ExpenseInstance[];
+  cards: CardWithPurchases[];
   loading: boolean;
   error: string | null;
 
@@ -59,329 +42,513 @@ export interface UseMonthReturn {
   goToPreviousMonth: () => void;
   goToMonth: (monthId: string) => void;
 
-  // Calculations
-  recalculateTotals: () => Promise<void>;
-
   // Saldo inicial
   updateSaldoInicial: (saldo: number) => Promise<void>;
 
-  // Despesas (foundation for Phase 4)
-  addDespesa: (despesa: Omit<Despesa, 'id' | 'createdAt'>) => Promise<void>;
-  updateDespesa: (id: string, data: Partial<Despesa>) => Promise<void>;
-  deleteDespesa: (id: string) => Promise<void>;
+  // Despesas
+  addExpense: (
+    expense: Omit<ExpenseInstanceInsert, "id" | "month_id" | "workspace_id" | "value_calculated" | "created_at" | "updated_at">
+  ) => Promise<void>;
+  updateExpense: (id: string, data: Partial<ExpenseInstance>) => Promise<void>;
+  deleteExpense: (id: string) => Promise<void>;
 
-  // Cartões (foundation for Phase 5)
-  addCartao: (cartao: Omit<Cartao, 'id' | 'totalFatura'>) => Promise<void>;
-  updateCartao: (id: string, data: Partial<Cartao>) => Promise<void>;
-  deleteCartao: (id: string) => Promise<void>;
+  // Cartões
+  addCard: (
+    card: Omit<CardInsert, "id" | "month_id" | "workspace_id">
+  ) => Promise<void>;
+  updateCard: (id: string, data: Partial<Card>) => Promise<void>;
+  deleteCard: (id: string) => Promise<void>;
 
-  // Compras (purchases on cards)
-  addCompra: (cartaoId: string, compra: Omit<Compra, 'id'>) => Promise<void>;
-  updateCompra: (cartaoId: string, compraId: string, data: Partial<Compra>) => Promise<void>;
-  deleteCompra: (cartaoId: string, compraId: string) => Promise<void>;
+  // Compras
+  addPurchase: (
+    cardId: string,
+    purchase: Omit<PurchaseInsert, "id" | "card_id">
+  ) => Promise<void>;
+  updatePurchase: (id: string, data: Partial<Purchase>) => Promise<void>;
+  deletePurchase: (id: string) => Promise<void>;
+
+  // Totals (calculated)
+  total_expenses: number;
+  total_cards: number;
+  sobra: number;
+
+  // Templates
+  backfillTemplateInstances: (templateId: string) => Promise<void>;
+  backfillPurchaseInstances: (templateId: string) => Promise<void>;
 }
+
+// Global locks shared across all useMonth instances to prevent concurrent executions
+const ensureTemplateInstancesLock = new Set<string>();
+const ensurePurchaseInstancesLock = new Set<string>();
 
 export function useMonth(): UseMonthReturn {
   const { activeWorkspace } = useWorkspace();
-  const [currentMonthId, setCurrentMonthId] = useState(getCurrentMonthId());
+  const { currentMonthId, goToNextMonth, goToPreviousMonth, goToMonth } = useMonthNavigation();
+  const { calculateTemplatesForMonth } = useRecurringTemplates();
+  const { isInitialized, syncNow } = useSyncContext();
+
   const [month, setMonth] = useState<Month | null>(null);
+  const [expenses, setExpenses] = useState<ExpenseInstance[]>([]);
+  const [cards, setCards] = useState<CardWithPurchases[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   /**
-   * Create a new month document
+   * Ensure all active templates have expense instances for this month
+   * Creates missing instances if needed
    */
-  const createMonth = useCallback(
-    async (monthId: string): Promise<Month> => {
-      if (!activeWorkspace) throw new Error('No active workspace');
-
-      const { year, month } = parseMonthId(monthId);
-      const monthName = formatMonthName(monthId);
-
-      const newMonth: Omit<Month, 'createdAt' | 'updatedAt'> = {
-        id: monthId,
-        nome: monthName,
-        ano: year,
-        mes: month,
-        saldoInicial: 0,
-        despesas: [],
-        cartoes: [],
-        totalDespesas: 0,
-        totalCartoes: 0,
-        sobra: 0,
-      };
-
-      const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${monthId}`);
-      await setDoc(monthRef, {
-        ...newMonth,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      return {
-        ...newMonth,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-    },
-    [activeWorkspace]
-  );
-
-  /**
-   * Helper: Get list of future month IDs (up to 12 months ahead)
-   */
-  const getFutureMonthIds = useCallback((startMonthId: string, count: number = 12): string[] => {
-    const monthIds: string[] = [];
-    let currentId = getNextMonthId(startMonthId);
-
-    for (let i = 0; i < count; i++) {
-      monthIds.push(currentId);
-      currentId = getNextMonthId(currentId);
-    }
-
-    return monthIds;
-  }, []);
-
-  /**
-   * Helper: Copy recurring expenses to a future month
-   * This ensures a month document exists and includes all active recurring expenses
-   */
-  const ensureMonthWithRecurringExpenses = useCallback(
-    async (monthId: string, recurringExpenses: Despesa[]) => {
+  const ensureTemplateInstances = useCallback(
+    async (monthId: string) => {
       if (!activeWorkspace) return;
 
-      const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${monthId}`);
-      const monthSnap = await getDoc(monthRef);
-
-      if (!monthSnap.exists()) {
-        // Create new month with recurring expenses
-        const { year, month } = parseMonthId(monthId);
-        const monthName = formatMonthName(monthId);
-
-        const newMonth: Omit<Month, 'createdAt' | 'updatedAt'> = {
-          id: monthId,
-          nome: monthName,
-          ano: year,
-          mes: month,
-          saldoInicial: 0,
-          despesas: recurringExpenses.map(exp => ({
-            ...exp,
-            id: `desp_${Date.now()}_${Math.random()}`,
-            pago: false, // Reset payment status for new month
-            createdAt: new Date(),
-          })),
-          cartoes: [],
-          totalDespesas: 0,
-          totalCartoes: 0,
-          sobra: 0,
-        };
-
-        await setDoc(monthRef, {
-          ...newMonth,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        // Month exists, add missing recurring expenses
-        const existingMonth = monthSnap.data() as Month;
-        const existingDespesas = existingMonth.despesas || [];
-        const existingDespesaIds = new Set(
-          existingDespesas
-            .filter(d => d.recurring?.isRecurring)
-            .map(d => d.nome) // Match by nome since IDs are different per month
-        );
-
-        const newRecurringExpenses = recurringExpenses
-          .filter(exp => !existingDespesaIds.has(exp.nome))
-          .map(exp => ({
-            ...exp,
-            id: `desp_${Date.now()}_${Math.random()}`,
-            pago: false,
-            createdAt: new Date(),
-          }));
-
-        if (newRecurringExpenses.length > 0) {
-          await updateDoc(monthRef, {
-            despesas: sanitizeForFirestore([...existingDespesas, ...newRecurringExpenses]),
-            updatedAt: serverTimestamp(),
-          });
-        }
+      // Check if already running for this month
+      const lockKey = `${activeWorkspace.id}:${monthId}`;
+      if (ensureTemplateInstancesLock.has(lockKey)) {
+        console.log(`🔒 [ensureTemplateInstances] Already running for ${monthId}, skipping...`);
+        return;
       }
-    },
-    [activeWorkspace]
-  );
 
-  /**
-   * Helper: Propagate recurring expense to future months
-   */
-  const propagateRecurringExpense = useCallback(
-    async (despesa: Despesa, startMonthId: string) => {
-      if (!despesa.recurring?.isRecurring) return;
-      if (!activeWorkspace) return;
+      // Acquire lock
+      ensureTemplateInstancesLock.add(lockKey);
+      console.log(`🔓 [ensureTemplateInstances] Acquired lock for ${monthId}`);
 
-      const futureMonthIds = getFutureMonthIds(startMonthId, 12);
+      try {
+        console.log(`\n🔍 [ensureTemplateInstances] Checking templates for month ${monthId}`);
 
-      for (const monthId of futureMonthIds) {
-        await ensureMonthWithRecurringExpenses(monthId, [despesa]);
+      // Get templates that should apply to this month (ONLY expense type, NOT card_purchase)
+      const templates = calculateTemplatesForMonth(monthId).filter(t => t.type !== 'card_purchase');
+
+      if (templates.length === 0) {
+        console.log(`  ⚠️ No active templates apply to ${monthId}\n`);
+        return;
       }
-    },
-    [activeWorkspace, getFutureMonthIds, ensureMonthWithRecurringExpenses]
-  );
 
-  /**
-   * Helper: Remove recurring expense from future months
-   */
-  const removeRecurringExpenseFromFuture = useCallback(
-    async (despesaNome: string, startMonthId: string) => {
-      if (!activeWorkspace) return;
+      console.log(`  📋 Found ${templates.length} templates that apply to ${monthId}`);
 
-      const futureMonthIds = getFutureMonthIds(startMonthId, 12);
+      // Get existing expense instances for this month
+      const existingExpenses = await db.getAllExpenseInstances(monthId, activeWorkspace.id);
+      const existingByTemplateId = new Map(
+        existingExpenses
+          .filter(e => e.template_id)
+          .map(e => [e.template_id!, e])
+      );
 
-      for (const monthId of futureMonthIds) {
-        const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${monthId}`);
-        const monthSnap = await getDoc(monthRef);
+      console.log(`  📊 Existing instances in ${monthId}: ${existingExpenses.length}`);
+      if (existingByTemplateId.size > 0) {
+        console.log(`     From templates:`, Array.from(existingByTemplateId.keys()).join(', '));
+      }
 
-        if (monthSnap.exists()) {
-          const monthData = monthSnap.data() as Month;
-          const updatedDespesas = (monthData.despesas || []).filter(
-            d => d.nome !== despesaNome || !d.recurring?.isRecurring
-          );
+      // Create missing instances
+      let createdCount = 0;
+      for (const template of templates) {
+        const existingInstance = existingByTemplateId.get(template.id);
 
-          if (updatedDespesas.length !== (monthData.despesas || []).length) {
-            await updateDoc(monthRef, {
-              despesas: sanitizeForFirestore(updatedDespesas),
-              updatedAt: serverTimestamp(),
-            });
+        if (existingInstance) {
+          console.log(`  ⏭️ Instance already exists for "${template.name}" (ID: ${existingInstance.id})`);
+        } else {
+          try {
+            const newId = generateUUID();
+            console.log(`  🆕 Creating NEW instance for "${template.name}" (ID: ${newId})`);
+
+            const expenseInstance: ExpenseInstance = {
+              id: newId,
+              month_id: monthId,
+              workspace_id: activeWorkspace.id,
+              template_id: template.id,
+              name: template.name,
+              value_planned: template.value_formula,
+              value_calculated: template.value_calculated,
+              is_paid: false,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            };
+
+            await db.insertExpenseInstance(expenseInstance);
+            createdCount++;
+            console.log(`  ✅ Created instance for "${template.name}" (ID: ${newId})`);
+          } catch (err: any) {
+            // If FOREIGN KEY error, the template was probably deleted
+            if (err.message?.includes('FOREIGN KEY')) {
+              console.warn(`  ⚠️ Template ${template.id} no longer exists, skipping...`);
+              continue;
+            }
+            // Re-throw other errors
+            throw err;
           }
         }
       }
-    },
-    [activeWorkspace, getFutureMonthIds]
-  );
 
-  /**
-   * Helper: Update recurring expense in future months
-   */
-  const updateRecurringExpenseInFuture = useCallback(
-    async (oldNome: string, updatedDespesa: Despesa, startMonthId: string) => {
-      if (!updatedDespesa.recurring?.isRecurring) return;
-      if (!activeWorkspace) return;
-
-      const futureMonthIds = getFutureMonthIds(startMonthId, 12);
-
-      for (const monthId of futureMonthIds) {
-        const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${monthId}`);
-        const monthSnap = await getDoc(monthRef);
-
-        if (monthSnap.exists()) {
-          const monthData = monthSnap.data() as Month;
-          const updatedDespesas = (monthData.despesas || []).map(d => {
-            if (d.nome === oldNome && d.recurring?.isRecurring) {
-              return {
-                ...d,
-                nome: updatedDespesa.nome,
-                valorPlanejado: updatedDespesa.valorPlanejado,
-                valorCalculado: updatedDespesa.valorCalculado,
-                recurring: updatedDespesa.recurring,
-              };
-            }
-            return d;
-          });
-
-          await updateDoc(monthRef, {
-            despesas: sanitizeForFirestore(updatedDespesas),
-            updatedAt: serverTimestamp(),
-          });
+        if (createdCount > 0) {
+          console.log(`\n  ✅ [ensureTemplateInstances] Created ${createdCount} new expense instances`);
+          // Emit event to notify other components
+          dataEvents.emit('expenses:changed');
+          // Trigger background sync
+          syncNow();
+        } else {
+          console.log(`\n  ✓ [ensureTemplateInstances] All templates already have instances`);
         }
+        console.log(''); // Empty line for readability
+      } finally {
+        // Release lock
+        ensureTemplateInstancesLock.delete(lockKey);
+        console.log(`🔓 [ensureTemplateInstances] Released lock for ${monthId}`);
       }
     },
-    [activeWorkspace, getFutureMonthIds]
+    [activeWorkspace, calculateTemplatesForMonth, syncNow]
   );
 
   /**
-   * Load month from Firestore or create if doesn't exist
-   * This function is now only used for creating a month when it doesn't exist
-   * Real-time listening is handled by useEffect below
+   * Ensure all active purchase templates have instances for this month
+   * Creates missing purchases if needed (for card_purchase templates)
+   */
+  const ensurePurchaseInstances = useCallback(
+    async (monthId: string) => {
+      if (!activeWorkspace) return;
+
+      // Check if already running for this month
+      const lockKey = `${activeWorkspace.id}:${monthId}`;
+      if (ensurePurchaseInstancesLock.has(lockKey)) {
+        console.log(`🔒 [ensurePurchaseInstances] Already running for ${monthId}, skipping...`);
+        return;
+      }
+
+      // Acquire lock
+      ensurePurchaseInstancesLock.add(lockKey);
+      console.log(`🔓 [ensurePurchaseInstances] Acquired lock for ${monthId}`);
+
+      try {
+        console.log(`\n🔍 [ensurePurchaseInstances] Checking purchase templates for month ${monthId}`);
+
+        // Get ALL templates from SQLite (to avoid race conditions with React state)
+        const allTemplates = await db.getAllRecurringTemplates(activeWorkspace.id);
+        const [year, month] = monthId.split('-').map(Number);
+
+        // Filter for card_purchase templates that apply to this month
+        const templates = allTemplates.filter(t => {
+          if (t.type !== 'card_purchase') return false;
+          if (!t.is_active) return false;
+
+          // Check start date
+          if (t.start_date) {
+            const startDate = new Date(t.start_date);
+            const targetDate = new Date(year, month - 1, 1);
+            if (targetDate < startDate) return false;
+          }
+
+          // Check end date
+          if (t.end_date) {
+            const endDate = new Date(t.end_date);
+            const targetDate = new Date(year, month - 1, 1);
+            if (targetDate > endDate) return false;
+          }
+
+          // Check frequency
+          const frequency = t.frequency || 'mensal';
+          if (frequency === 'mensal') return true;
+
+          if (frequency === 'anual') {
+            if (!t.start_date) return true;
+            const startDate = new Date(t.start_date);
+            return month === startDate.getMonth() + 1;
+          }
+
+          // For bimestral, trimestral, semestral
+          if (!t.start_date) return true;
+          const startDate = new Date(t.start_date);
+          const startYear = startDate.getFullYear();
+          const startMonth = startDate.getMonth() + 1;
+          const monthsSinceStart = (year - startYear) * 12 + (month - startMonth);
+          if (monthsSinceStart < 0) return false;
+
+          let interval = 1;
+          if (frequency === 'bimestral') interval = 2;
+          else if (frequency === 'trimestral') interval = 3;
+          else if (frequency === 'semestral') interval = 6;
+
+          return monthsSinceStart % interval === 0;
+        });
+
+        if (templates.length === 0) {
+          console.log(`  ⚠️ No active card_purchase templates apply to ${monthId}\n`);
+          return;
+        }
+
+        console.log(`  📋 Found ${templates.length} card_purchase templates that apply to ${monthId}`);
+
+        // Get all cards from workspace (cards are global now)
+        const allCards = await db.getAllCards(activeWorkspace.id);
+
+        if (allCards.length === 0) {
+          console.log(`  ⚠️ No cards exist in workspace, skipping purchase instances\n`);
+          return;
+        }
+
+        // Get existing purchases for this month
+        let createdCount = 0;
+
+        for (const template of templates) {
+          const metadata = (template.metadata || {}) as any;
+          const targetCardId = metadata.card_id;
+
+          if (!targetCardId) {
+            console.log(`  ⚠️ Template "${template.name}" has no card_id in metadata, skipping...`);
+            continue;
+          }
+
+          // Check if card exists
+          const targetCard = allCards.find(c => c.id === targetCardId);
+          if (!targetCard) {
+            console.log(`  ⚠️ Card ${targetCardId} not found, skipping template "${template.name}"`);
+            continue;
+          }
+
+          // Check if purchase already exists for this template+card+month
+          const existingPurchases = await db.getAllPurchasesByCardAndMonth(targetCardId, monthId);
+          const existingInstance = existingPurchases.find(p => p.template_id === template.id);
+
+          if (existingInstance) {
+            console.log(`  ⏭️ Purchase already exists for "${template.name}" on card "${targetCard.name}" (ID: ${existingInstance.id})`);
+          } else {
+            try {
+              const newId = generateUUID();
+              console.log(`  🆕 Creating NEW purchase for "${template.name}" on card "${targetCard.name}" (ID: ${newId})`);
+
+              const purchase: Purchase = {
+                id: newId,
+                card_id: targetCardId,
+                month_id: monthId,
+                template_id: template.id,
+                description: template.name,
+                total_value: template.value_calculated,
+                current_installment: 1,
+                total_installments: 1,
+                is_marked: true,
+                purchase_date: new Date().toISOString().split('T')[0],
+                purchase_group_id: null,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              };
+
+              await db.insertPurchase(purchase);
+              console.log(`  ✅ Created purchase for "${template.name}" (ID: ${newId})`);
+              createdCount++;
+            } catch (err: any) {
+              // If FOREIGN KEY error, the template was probably deleted
+              if (err.message?.includes('FOREIGN KEY')) {
+                console.warn(`  ⚠️ Template ${template.id} no longer exists, skipping...`);
+                continue;
+              }
+              // Re-throw other errors
+              throw err;
+            }
+          }
+        }
+
+        if (createdCount > 0) {
+          console.log(`\n  ✅ [ensurePurchaseInstances] Created ${createdCount} new purchases`);
+          // Emit event to notify other components
+          dataEvents.emit('purchases:changed');
+          // Trigger background sync
+          syncNow();
+        } else {
+          console.log(`\n  ✓ [ensurePurchaseInstances] All templates already have purchases`);
+        }
+        console.log(''); // Empty line for readability
+      } finally {
+        // Release lock
+        ensurePurchaseInstancesLock.delete(lockKey);
+        console.log(`🔓 [ensurePurchaseInstances] Released lock for ${monthId}`);
+      }
+    },
+    [activeWorkspace, syncNow]
+  );
+
+  /**
+   * Create new month with template instances
+   */
+  const createMonth = useCallback(
+    async (
+      monthId: string,
+      year: number,
+      month: number
+    ): Promise<Month> => {
+      if (!activeWorkspace) throw new Error("No active workspace");
+
+      const monthData: Month = {
+        id: monthId,
+        workspace_id: activeWorkspace.id,
+        name: formatMonthName(monthId),
+        year,
+        month,
+        saldo_inicial: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      // Insert month into SQLite
+      await db.insertMonth(monthData);
+
+      console.log("✅ Month created in SQLite:", monthId);
+
+      // Create expense instances from active templates
+      await ensureTemplateInstances(monthId);
+
+      // Create purchase instances from active card_purchase templates
+      await ensurePurchaseInstances(monthId);
+
+      // Trigger background sync
+      syncNow();
+
+      return monthData;
+    },
+    [activeWorkspace, ensureTemplateInstances, ensurePurchaseInstances, syncNow]
+  );
+
+  /**
+   * Load or create month from SQLite
    */
   const loadMonth = useCallback(
     async (monthId: string) => {
-      if (!activeWorkspace) {
-        setMonth(null);
-        setLoading(false);
-        return;
-      }
-
-      if (!isValidMonthId(monthId)) {
-        setError('Invalid month ID format');
-        setLoading(false);
-        return;
-      }
+      if (!activeWorkspace || !isInitialized) return;
 
       try {
         setLoading(true);
         setError(null);
 
-        const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${monthId}`);
-        const monthSnap = await getDoc(monthRef);
+        // Try to get existing month from SQLite
+        let existingMonth = await db.getMonthById(monthId, activeWorkspace.id);
 
-        if (!monthSnap.exists()) {
-          // Create month if it doesn't exist
-          const newMonth = await createMonth(monthId);
-          setMonth(newMonth);
+        if (existingMonth) {
+          setMonth(existingMonth);
+          // Check and create missing template instances for existing month
+          await ensureTemplateInstances(monthId);
+          // Check and create missing purchase instances for existing month
+          await ensurePurchaseInstances(monthId);
         } else {
-          const monthData = { id: monthSnap.id, ...monthSnap.data() } as Month;
-          setMonth(monthData);
+          // Create month on-demand (will call ensure functions internally)
+          const { year, month } = parseMonthId(monthId);
+          const newMonth = await createMonth(monthId, year, month);
+          setMonth(newMonth);
         }
+
+        // Load expenses and cards from SQLite for the specific month
+        await loadExpenses(monthId);
+        await loadCards(monthId);
       } catch (err: any) {
-        console.error('Error loading month:', err);
-        setError(err.message || 'Error loading month');
+        console.error("❌ Error loading month:", err);
+        setError(err.message);
       } finally {
         setLoading(false);
       }
     },
-    [activeWorkspace, createMonth]
+    [activeWorkspace, isInitialized, createMonth, ensureTemplateInstances, ensurePurchaseInstances]
   );
 
   /**
-   * Recalculate all totals and update Firestore
+   * Load expenses from SQLite
    */
-  const recalculateTotals = useCallback(async () => {
-    if (!month || !activeWorkspace) return;
+  const loadExpenses = useCallback(async (monthId?: string) => {
+    const targetMonthId = monthId ?? currentMonthId;
+    if (!activeWorkspace || !targetMonthId || !isInitialized) return;
 
-    // Get fresh data from state
-    const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-    const monthSnap = await getDoc(monthRef);
+    const data = await db.getAllExpenseInstances(targetMonthId, activeWorkspace.id);
+    setExpenses(data || []);
+  }, [activeWorkspace, currentMonthId, isInitialized]);
 
-    if (!monthSnap.exists()) return;
+  /**
+   * Load cards with purchases from SQLite
+   */
+  const loadCards = useCallback(async (monthId?: string) => {
+    const targetMonthId = monthId ?? currentMonthId;
+    if (!activeWorkspace || !targetMonthId || !isInitialized) return;
 
-    const freshData = monthSnap.data();
-    const totalDespesas = calculateTotalDespesas(freshData.despesas || []);
-    const totalCartoes = calculateTotalCartoes(freshData.cartoes || []);
-    const sobra = calculateSobra(freshData.saldoInicial || 0, totalDespesas, totalCartoes);
+    // Load all cards from workspace (cards are now global)
+    const cardsData = await db.getAllCards(activeWorkspace.id);
 
-    // Update Firestore with calculated totals
-    await updateDoc(monthRef, {
-      totalDespesas,
-      totalCartoes,
-      sobra,
-      updatedAt: serverTimestamp(),
+    // Load purchases for each card, filtered by month
+    const cardsWithPurchases: CardWithPurchases[] = await Promise.all(
+      cardsData.map(async (card) => {
+        const purchases = await db.getAllPurchasesByCardAndMonth(card.id, targetMonthId);
+        return {
+          ...card,
+          purchases,
+        };
+      })
+    );
+
+    setCards(cardsWithPurchases || []);
+  }, [activeWorkspace, currentMonthId, isInitialized]);
+
+  // Load month when workspace or monthId changes
+  // Note: loadMonth is NOT in dependencies to avoid re-triggers when templates change
+  useEffect(() => {
+    if (!activeWorkspace || !isInitialized) {
+      setMonth(null);
+      setExpenses([]);
+      setCards([]);
+      setLoading(false);
+      return;
+    }
+
+    loadMonth(currentMonthId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspace?.id, currentMonthId, isInitialized]);
+
+  // Listen for data change events from other components
+  useEffect(() => {
+    if (!activeWorkspace || !isInitialized) return;
+
+    console.log('📡 [useMonth] Setting up event listeners');
+
+    // Reload expenses when they change
+    const unsubExpenses = dataEvents.on('expenses:changed', () => {
+      console.log('📡 [useMonth] Expenses changed, reloading...');
+      loadExpenses();
     });
 
-    // Update local state with all fresh data
-    setMonth((prev) =>
-      prev
-        ? {
-            ...prev,
-            despesas: freshData.despesas || [],
-            cartoes: freshData.cartoes || [],
-            saldoInicial: freshData.saldoInicial || 0,
-            totalDespesas,
-            totalCartoes,
-            sobra,
-          }
-        : null
-    );
-  }, [month, activeWorkspace]);
+    // Reload month data when it changes
+    const unsubMonths = dataEvents.on('months:changed', () => {
+      console.log('📡 [useMonth] Month changed, reloading...');
+      loadMonth(currentMonthId);
+    });
+
+    // Reload cards when they change
+    const unsubCards = dataEvents.on('cards:changed', () => {
+      console.log('📡 [useMonth] Cards changed, reloading...');
+      loadCards();
+    });
+
+    // Reload purchases (which are part of cards)
+    const unsubPurchases = dataEvents.on('purchases:changed', () => {
+      console.log('📡 [useMonth] Purchases changed, reloading cards...');
+      loadCards();
+    });
+
+    // When templates change, reload expenses and check for purchase instances
+    const unsubTemplates = dataEvents.on('templates:changed', async () => {
+      console.log('📡 [useMonth] Templates changed, checking instances...');
+
+      // Reload expenses (for expense templates)
+      loadExpenses();
+
+      // Check and create purchase instances (for card_purchase templates)
+      if (currentMonthId) {
+        await ensurePurchaseInstances(currentMonthId);
+        // Reload cards to show new purchases
+        await loadCards();
+      }
+    });
+
+    // Cleanup
+    return () => {
+      console.log('📡 [useMonth] Removing event listeners');
+      unsubExpenses();
+      unsubMonths();
+      unsubCards();
+      unsubPurchases();
+      unsubTemplates();
+    };
+  }, [activeWorkspace?.id, currentMonthId, isInitialized, loadExpenses, loadMonth, loadCards, ensureTemplateInstances]);
 
   /**
    * Update saldo inicial
@@ -390,717 +557,621 @@ export function useMonth(): UseMonthReturn {
     async (saldo: number) => {
       if (!month || !activeWorkspace) return;
 
-      const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-      await setDoc(
-        monthRef,
-        {
-          saldoInicial: saldo,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+      await db.updateMonth(month.id, { saldo_inicial: saldo });
 
-      setMonth((prev) => (prev ? { ...prev, saldoInicial: saldo } : null));
-      await recalculateTotals();
+      setMonth((prev) => (prev ? { ...prev, saldo_inicial: saldo } : null));
+
+      // Emit event to notify other components
+      dataEvents.emit('months:changed');
+
+      syncNow();
     },
-    [month, activeWorkspace, recalculateTotals]
+    [month, activeWorkspace, syncNow]
   );
 
   /**
-   * Add despesa
+   * Add expense
    */
-  const addDespesa = useCallback(
-    async (despesa: Omit<Despesa, 'id' | 'createdAt'>) => {
-      if (!month || !activeWorkspace) return;
-
-      const newDespesa: Despesa = {
-        ...despesa,
-        id: `desp_${Date.now()}`,
-        valorCalculado: evaluateFormula(despesa.valorPlanejado),
-        createdAt: new Date(),
-      };
-
-      const updatedDespesas = [...month.despesas, newDespesa];
-
-      // Update local state immediately for responsiveness
-      setMonth((prev) => (prev ? { ...prev, despesas: updatedDespesas } : null));
-
-      const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-      await updateDoc(monthRef, {
-        despesas: sanitizeForFirestore(updatedDespesas),
-        updatedAt: serverTimestamp(),
-      });
-
-      // Recalculate and save totals
-      await recalculateTotals();
-
-      // Propagate to future months if recurring
-      if (newDespesa.recurring?.isRecurring) {
-        await propagateRecurringExpense(newDespesa, month.id);
-      }
-    },
-    [month, activeWorkspace, recalculateTotals, propagateRecurringExpense]
-  );
-
-  /**
-   * Update despesa
-   */
-  const updateDespesa = useCallback(
-    async (id: string, data: Partial<Despesa>) => {
-      if (!month || !activeWorkspace) return;
-
-      // Find the original despesa to check recurring status
-      const originalDespesa = month.despesas.find(d => d.id === id);
-      if (!originalDespesa) return;
-
-      const wasRecurring = originalDespesa.recurring?.isRecurring || false;
-      const oldNome = originalDespesa.nome;
-
-      const updatedDespesas = month.despesas.map((d) => {
-        if (d.id === id) {
-          const updated = { ...d, ...data };
-          // Recalculate if valorPlanejado changed
-          if (data.valorPlanejado !== undefined) {
-            updated.valorCalculado = evaluateFormula(data.valorPlanejado);
-          }
-          return updated;
-        }
-        return d;
-      });
-
-      const updatedDespesa = updatedDespesas.find(d => d.id === id)!;
-      const isNowRecurring = updatedDespesa.recurring?.isRecurring || false;
-
-      // Update local state immediately for responsiveness
-      setMonth((prev) => (prev ? { ...prev, despesas: updatedDespesas } : null));
-
-      const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-      await updateDoc(monthRef, {
-        despesas: sanitizeForFirestore(updatedDespesas),
-        updatedAt: serverTimestamp(),
-      });
-
-      // Recalculate and save totals
-      await recalculateTotals();
-
-      // Handle recurring expense propagation
-      if (wasRecurring && !isNowRecurring) {
-        // Was recurring, now is not: remove from future months
-        await removeRecurringExpenseFromFuture(oldNome, month.id);
-      } else if (isNowRecurring) {
-        if (wasRecurring) {
-          // Still recurring: update future months
-          await updateRecurringExpenseInFuture(oldNome, updatedDespesa, month.id);
-        } else {
-          // Newly marked as recurring: propagate to future
-          await propagateRecurringExpense(updatedDespesa, month.id);
-        }
-      }
-    },
-    [month, activeWorkspace, recalculateTotals, propagateRecurringExpense, removeRecurringExpenseFromFuture, updateRecurringExpenseInFuture]
-  );
-
-  /**
-   * Delete despesa
-   */
-  const deleteDespesa = useCallback(
-    async (id: string) => {
-      if (!month || !activeWorkspace) return;
-
-      // Find the despesa to check if it's recurring
-      const despesa = month.despesas.find(d => d.id === id);
-      const wasRecurring = despesa?.recurring?.isRecurring || false;
-      const despesaNome = despesa?.nome || '';
-
-      const updatedDespesas = month.despesas.filter((d) => d.id !== id);
-
-      // Update local state immediately for responsiveness
-      setMonth((prev) => (prev ? { ...prev, despesas: updatedDespesas } : null));
-
-      const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-      await updateDoc(monthRef, {
-        despesas: sanitizeForFirestore(updatedDespesas),
-        updatedAt: serverTimestamp(),
-      });
-
-      // Recalculate and save totals
-      await recalculateTotals();
-
-      // Remove from future months if it was recurring
-      if (wasRecurring) {
-        await removeRecurringExpenseFromFuture(despesaNome, month.id);
-      }
-    },
-    [month, activeWorkspace, recalculateTotals, removeRecurringExpenseFromFuture]
-  );
-
-  /**
-   * Helper: Generate month IDs for installments (including past if needed)
-   */
-  const getInstallmentMonthIds = useCallback((
-    currentMonthId: string,
-    parcelaAtual: number,
-    parcelasTotal: number
-  ): { monthId: string; parcelaNum: number }[] => {
-    const result: { monthId: string; parcelaNum: number }[] = [];
-
-    // Calculate how many months back to go (for retrospective installments)
-    const monthsBack = parcelaAtual - 1;
-
-    // Start from the first installment month
-    let monthId = currentMonthId;
-    for (let i = 0; i < monthsBack; i++) {
-      monthId = getPreviousMonthId(monthId);
-    }
-
-    // Generate all installment months from first to last
-    for (let parcela = 1; parcela <= parcelasTotal; parcela++) {
-      result.push({ monthId, parcelaNum: parcela });
-      if (parcela < parcelasTotal) {
-        monthId = getNextMonthId(monthId);
-      }
-    }
-
-    return result;
-  }, []);
-
-  /**
-   * Helper: Create or update installments across multiple months
-   */
-  const propagateInstallments = useCallback(
+  const addExpense = useCallback(
     async (
-      cartaoId: string,
-      cartaoNome: string,
-      compra: Omit<Compra, 'id'>,
-      currentMonthId: string
+      expense: Omit<ExpenseInstanceInsert, "id" | "month_id" | "workspace_id" | "value_calculated" | "created_at" | "updated_at">
     ) => {
-      if (!activeWorkspace) return;
-
-      const purchaseGroupId = `group_${Date.now()}`;
-      const installmentMonths = getInstallmentMonthIds(
-        currentMonthId,
-        compra.parcelaAtual,
-        compra.parcelasTotal
-      );
-
-      for (const { monthId, parcelaNum } of installmentMonths) {
-        const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${monthId}`);
-        const monthSnap = await getDoc(monthRef);
-
-        const installmentCompra: Compra = {
-          ...compra,
-          id: `comp_${Date.now()}_${parcelaNum}`,
-          parcelaAtual: parcelaNum,
-          purchaseGroupId,
-          createdFromInstallment: true,
-        };
-
-        if (!monthSnap.exists()) {
-          // Create new month with this installment
-          const { year, month } = parseMonthId(monthId);
-          const monthName = formatMonthName(monthId);
-
-          const newCartao: Cartao = {
-            id: cartaoId,
-            nome: cartaoNome,
-            limiteTotal: 0,
-            compras: [installmentCompra],
-            totalFatura: calculateTotalFatura([installmentCompra]),
-          };
-
-          const newMonth: Omit<Month, 'createdAt' | 'updatedAt'> = {
-            id: monthId,
-            nome: monthName,
-            ano: year,
-            mes: month,
-            saldoInicial: 0,
-            despesas: [],
-            cartoes: [newCartao],
-            totalDespesas: 0,
-            totalCartoes: 0,
-            sobra: 0,
-          };
-
-          await setDoc(monthRef, {
-            ...newMonth,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        } else {
-          // Month exists, add or update cartao and compra
-          const monthData = monthSnap.data() as Month;
-          const existingCartoes = monthData.cartoes || [];
-
-          const cartaoIndex = existingCartoes.findIndex(c => c.id === cartaoId);
-
-          if (cartaoIndex >= 0) {
-            // Cartao exists, add compra to it
-            const updatedCartoes = [...existingCartoes];
-            const updatedCompras = [...updatedCartoes[cartaoIndex].compras, installmentCompra];
-            updatedCartoes[cartaoIndex] = {
-              ...updatedCartoes[cartaoIndex],
-              compras: updatedCompras,
-              totalFatura: calculateTotalFatura(updatedCompras),
-            };
-
-            await updateDoc(monthRef, {
-              cartoes: sanitizeForFirestore(updatedCartoes),
-              updatedAt: serverTimestamp(),
-            });
-          } else {
-            // Cartao doesn't exist in this month, create it
-            const newCartao: Cartao = {
-              id: cartaoId,
-              nome: cartaoNome,
-              limiteTotal: 0,
-              compras: [installmentCompra],
-              totalFatura: calculateTotalFatura([installmentCompra]),
-            };
-
-            await updateDoc(monthRef, {
-              cartoes: sanitizeForFirestore([...existingCartoes, newCartao]),
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-      }
-    },
-    [activeWorkspace, getInstallmentMonthIds]
-  );
-
-  /**
-   * Helper: Delete all installments in a purchase group
-   */
-  const deleteInstallmentGroup = useCallback(
-    async (purchaseGroupId: string, currentMonthId: string) => {
-      if (!activeWorkspace) return;
-
-      // We need to check 12 months back and 12 months forward
-      const monthIds: string[] = [];
-      let monthId = currentMonthId;
-
-      // Add past months
-      for (let i = 0; i < 12; i++) {
-        monthId = getPreviousMonthId(monthId);
-        monthIds.push(monthId);
-      }
-
-      // Add current month
-      monthIds.push(currentMonthId);
-
-      // Add future months
-      monthId = currentMonthId;
-      for (let i = 0; i < 12; i++) {
-        monthId = getNextMonthId(monthId);
-        monthIds.push(monthId);
-      }
-
-      // Delete from all months
-      for (const mId of monthIds) {
-        const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${mId}`);
-        const monthSnap = await getDoc(monthRef);
-
-        if (monthSnap.exists()) {
-          const monthData = monthSnap.data() as Month;
-          const updatedCartoes = (monthData.cartoes || []).map(cartao => ({
-            ...cartao,
-            compras: cartao.compras.filter(c => c.purchaseGroupId !== purchaseGroupId),
-            totalFatura: calculateTotalFatura(
-              cartao.compras.filter(c => c.purchaseGroupId !== purchaseGroupId)
-            ),
-          }));
-
-          await updateDoc(monthRef, {
-            cartoes: sanitizeForFirestore(updatedCartoes),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      }
-    },
-    [activeWorkspace]
-  );
-
-  /**
-   * Add cartao
-   */
-  const addCartao = useCallback(
-    async (cartao: Omit<Cartao, 'id' | 'totalFatura'>) => {
       if (!month || !activeWorkspace) return;
 
-      const newCartao: Cartao = {
-        ...cartao,
-        id: `card_${Date.now()}`,
-        totalFatura: 0,
+      const expenseData: ExpenseInstance = {
+        id: generateUUID(),
+        month_id: currentMonthId,
+        workspace_id: activeWorkspace.id,
+        name: expense.name,
+        value_planned: expense.value_planned,
+        value_calculated: evaluateFormula(expense.value_planned),
+        is_paid: expense.is_paid || false,
+        template_id: expense.template_id || null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       };
 
-      const updatedCartoes = [...month.cartoes, newCartao];
+      await db.insertExpenseInstance(expenseData);
+      await loadExpenses();
 
-      // Update local state immediately for responsiveness
-      setMonth((prev) => (prev ? { ...prev, cartoes: updatedCartoes } : null));
+      // Emit event to notify other components
+      dataEvents.emit('expenses:changed');
 
-      const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-      await updateDoc(monthRef, {
-        cartoes: sanitizeForFirestore(updatedCartoes),
-        updatedAt: serverTimestamp(),
-      });
-
-      // Recalculate and save totals
-      await recalculateTotals();
+      syncNow();
     },
-    [month, activeWorkspace, recalculateTotals]
+    [month, activeWorkspace, currentMonthId, loadExpenses, syncNow]
   );
 
   /**
-   * Update cartao
+   * Update expense
    */
-  const updateCartao = useCallback(
-    async (id: string, data: Partial<Cartao>) => {
-      if (!month || !activeWorkspace) return;
-
-      const updatedCartoes = month.cartoes.map((c) => {
-        if (c.id === id) {
-          const updated = { ...c, ...data };
-          // Recalculate totalFatura
-          updated.totalFatura = calculateTotalFatura(updated.compras);
-          return updated;
-        }
-        return c;
-      });
-
-      // Update local state immediately for responsiveness
-      setMonth((prev) => (prev ? { ...prev, cartoes: updatedCartoes } : null));
-
-      const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-      await updateDoc(monthRef, {
-        cartoes: sanitizeForFirestore(updatedCartoes),
-        updatedAt: serverTimestamp(),
-      });
-
-      // Recalculate and save totals
-      await recalculateTotals();
-    },
-    [month, activeWorkspace, recalculateTotals]
-  );
-
-  /**
-   * Delete cartao
-   */
-  const deleteCartao = useCallback(
-    async (id: string) => {
-      if (!month || !activeWorkspace) return;
-
-      const updatedCartoes = month.cartoes.filter((c) => c.id !== id);
-
-      // Update local state immediately for responsiveness
-      setMonth((prev) => (prev ? { ...prev, cartoes: updatedCartoes } : null));
-
-      const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-      await updateDoc(monthRef, {
-        cartoes: sanitizeForFirestore(updatedCartoes),
-        updatedAt: serverTimestamp(),
-      });
-
-      // Recalculate and save totals
-      await recalculateTotals();
-    },
-    [month, activeWorkspace, recalculateTotals]
-  );
-
-  /**
-   * Add compra to a cartao
-   */
-  const addCompra = useCallback(
-    async (cartaoId: string, compra: Omit<Compra, 'id'>) => {
-      if (!month || !activeWorkspace) return;
-
-      // Check if this is a multi-installment purchase
-      const isMultiInstallment = compra.parcelasTotal > 1;
-
-      if (isMultiInstallment) {
-        // Propagate installments across multiple months
-        const cartao = month.cartoes.find(c => c.id === cartaoId);
-        if (!cartao) return;
-
-        await propagateInstallments(cartaoId, cartao.nome, compra, month.id);
-
-        // Trigger recalculation
-        await recalculateTotals();
-      } else {
-        // Single payment, add normally
-        const newCompra: Compra = {
-          ...compra,
-          id: `comp_${Date.now()}`,
-        };
-
-        const updatedCartoes = month.cartoes.map((c) => {
-          if (c.id === cartaoId) {
-            const updatedCompras = [...c.compras, newCompra];
-            return {
-              ...c,
-              compras: updatedCompras,
-              totalFatura: calculateTotalFatura(updatedCompras),
-            };
-          }
-          return c;
-        });
-
-        // Update local state immediately for responsiveness
-        setMonth((prev) => (prev ? { ...prev, cartoes: updatedCartoes } : null));
-
-        const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-        await updateDoc(monthRef, {
-          cartoes: sanitizeForFirestore(updatedCartoes),
-          updatedAt: serverTimestamp(),
-        });
-
-        // Recalculate and save totals
-        await recalculateTotals();
-      }
-    },
-    [month, activeWorkspace, recalculateTotals, propagateInstallments]
-  );
-
-  /**
-   * Helper: Update all installments in a purchase group
-   */
-  const updateInstallmentGroup = useCallback(
-    async (purchaseGroupId: string, data: Partial<Compra>, currentMonthId: string) => {
+  const updateExpense = useCallback(
+    async (id: string, data: Partial<ExpenseInstance>) => {
       if (!activeWorkspace) return;
 
-      // Fields that should be synced across all installments
-      const syncedFields: Partial<Compra> = {};
-      if (data.descricao !== undefined) syncedFields.descricao = data.descricao;
-      if (data.valorTotal !== undefined) syncedFields.valorTotal = data.valorTotal;
-      if (data.marcado !== undefined) syncedFields.marcado = data.marcado;
-
-      // We need to check 12 months back and 12 months forward
-      const monthIds: string[] = [];
-      let monthId = currentMonthId;
-
-      // Add past months
-      for (let i = 0; i < 12; i++) {
-        monthId = getPreviousMonthId(monthId);
-        monthIds.push(monthId);
+      const updateData: any = { ...data };
+      if (data.value_planned !== undefined) {
+        updateData.value_calculated = evaluateFormula(data.value_planned);
       }
 
-      // Add current month
-      monthIds.push(currentMonthId);
+      await db.updateExpenseInstance(id, updateData);
+      await loadExpenses();
 
-      // Add future months
-      monthId = currentMonthId;
-      for (let i = 0; i < 12; i++) {
-        monthId = getNextMonthId(monthId);
-        monthIds.push(monthId);
-      }
+      // Emit event to notify other components
+      dataEvents.emit('expenses:changed');
 
-      // Update all months
-      for (const mId of monthIds) {
-        const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${mId}`);
-        const monthSnap = await getDoc(monthRef);
+      syncNow();
+    },
+    [activeWorkspace, loadExpenses, syncNow]
+  );
 
-        if (monthSnap.exists()) {
-          const monthData = monthSnap.data() as Month;
-          const updatedCartoes = (monthData.cartoes || []).map(cartao => ({
-            ...cartao,
-            compras: cartao.compras.map(c =>
-              c.purchaseGroupId === purchaseGroupId ? { ...c, ...syncedFields } : c
-            ),
-            totalFatura: calculateTotalFatura(
-              cartao.compras.map(c =>
-                c.purchaseGroupId === purchaseGroupId ? { ...c, ...syncedFields } : c
-              )
-            ),
-          }));
+  /**
+   * Delete expense
+   */
+  const deleteExpense = useCallback(
+    async (id: string) => {
+      if (!activeWorkspace) return;
 
-          await updateDoc(monthRef, {
-            cartoes: sanitizeForFirestore(updatedCartoes),
-            updatedAt: serverTimestamp(),
-          });
+      // Use sync service to delete from Supabase → SQLite
+      await syncOps.deleteExpenseInstanceSync(id, activeWorkspace.id);
+      await loadExpenses();
+
+      // Emit event to notify other components
+      dataEvents.emit('expenses:changed');
+    },
+    [activeWorkspace, loadExpenses]
+  );
+
+  /**
+   * Backfill template instances for existing months
+   * Fetches template directly from SQLite to avoid state race conditions
+   */
+  const backfillTemplateInstances = useCallback(
+    async (templateId: string) => {
+      if (!activeWorkspace) return;
+
+      console.log("🔄 [backfillTemplateInstances] Starting for template:", templateId);
+      console.log("🔄 [backfillTemplateInstances] Current month:", currentMonthId);
+
+      try {
+        // Get template from SQLite (not from state to avoid race condition)
+        const template = await db.getRecurringTemplateById(templateId);
+
+        if (!template) {
+          console.error("❌ Template not found in SQLite:", templateId);
+          return;
         }
-      }
-    },
-    [activeWorkspace]
-  );
 
-  /**
-   * Update compra in a cartao
-   */
-  const updateCompra = useCallback(
-    async (cartaoId: string, compraId: string, data: Partial<Compra>) => {
-      if (!month || !activeWorkspace) return;
+        console.log("📋 [backfillTemplateInstances] Template:", template.name);
+        console.log(`   - Active: ${template.is_active}`);
+        console.log(`   - Frequency: ${template.frequency}`);
+        console.log(`   - Start: ${template.start_date}`);
+        console.log(`   - End: ${template.end_date || 'none'}`);
 
-      // Find the compra to check if it's part of an installment group
-      const cartao = month.cartoes.find(c => c.id === cartaoId);
-      const compra = cartao?.compras.find(c => c.id === compraId);
-      const purchaseGroupId = compra?.purchaseGroupId;
+        if (!template.is_active) {
+          console.log("⚠️ Template is inactive, skipping backfill");
+          return;
+        }
 
-      if (purchaseGroupId && (data.descricao !== undefined || data.valorTotal !== undefined || data.marcado !== undefined)) {
-        // This is part of an installment group, update all installments
-        await updateInstallmentGroup(purchaseGroupId, data, month.id);
-        // Trigger recalculation
-        await recalculateTotals();
-      } else {
-        // Single purchase or local-only update, update normally
-        const updatedCartoes = month.cartoes.map((c) => {
-          if (c.id === cartaoId) {
-            const updatedCompras = c.compras.map((comp) =>
-              comp.id === compraId ? { ...comp, ...data } : comp
-            );
-            return {
-              ...c,
-              compras: updatedCompras,
-              totalFatura: calculateTotalFatura(updatedCompras),
-            };
+        // Get all existing months from current month onwards
+        const allMonths = await db.getAllMonths(activeWorkspace.id);
+        const applicableMonths = allMonths.filter(m => m.id >= currentMonthId);
+
+        console.log(
+          "🔄 [backfillTemplateInstances] Found",
+          applicableMonths.length,
+          "months (current + future):",
+          applicableMonths.map(m => m.id).join(', ')
+        );
+
+        // For each existing month, check if template applies using same logic as shouldApplyInMonth
+        let createdCount = 0;
+        let skippedCount = 0;
+        let notApplicableCount = 0;
+
+        for (const monthRecord of applicableMonths) {
+          console.log(`\n📅 [backfillTemplateInstances] Checking month: ${monthRecord.id}`);
+
+          const [year, monthNum] = monthRecord.id.split('-').map(Number);
+
+          // Check if template applies to this month
+          let applies = true;
+
+          // Check start date
+          if (template.start_date) {
+            const startDate = new Date(template.start_date);
+            const startYear = startDate.getFullYear();
+            const startMonth = startDate.getMonth() + 1;
+            const targetYearMonth = year * 12 + monthNum;
+            const startYearMonth = startYear * 12 + startMonth;
+            if (targetYearMonth < startYearMonth) {
+              applies = false;
+              console.log(`  ✗ Before start date`);
+            }
           }
-          return c;
-        });
 
-        // Update local state immediately for responsiveness
-        setMonth((prev) => (prev ? { ...prev, cartoes: updatedCartoes } : null));
-
-        const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-        await updateDoc(monthRef, {
-          cartoes: sanitizeForFirestore(updatedCartoes),
-          updatedAt: serverTimestamp(),
-        });
-
-        // Recalculate and save totals
-        await recalculateTotals();
-      }
-    },
-    [month, activeWorkspace, recalculateTotals, updateInstallmentGroup]
-  );
-
-  /**
-   * Delete compra from a cartao
-   */
-  const deleteCompra = useCallback(
-    async (cartaoId: string, compraId: string) => {
-      if (!month || !activeWorkspace) return;
-
-      // Find the compra to check if it's part of an installment group
-      const cartao = month.cartoes.find(c => c.id === cartaoId);
-      const compra = cartao?.compras.find(c => c.id === compraId);
-      const purchaseGroupId = compra?.purchaseGroupId;
-
-      if (purchaseGroupId) {
-        // This is part of an installment group, delete all installments
-        await deleteInstallmentGroup(purchaseGroupId, month.id);
-        // Trigger recalculation
-        await recalculateTotals();
-      } else {
-        // Single purchase, delete normally
-        const updatedCartoes = month.cartoes.map((c) => {
-          if (c.id === cartaoId) {
-            const updatedCompras = c.compras.filter((comp) => comp.id !== compraId);
-            return {
-              ...c,
-              compras: updatedCompras,
-              totalFatura: calculateTotalFatura(updatedCompras),
-            };
+          // Check end date
+          if (applies && template.end_date) {
+            const endDate = new Date(template.end_date);
+            const endYear = endDate.getFullYear();
+            const endMonth = endDate.getMonth() + 1;
+            const targetYearMonth = year * 12 + monthNum;
+            const endYearMonth = endYear * 12 + endMonth;
+            if (targetYearMonth > endYearMonth) {
+              applies = false;
+              console.log(`  ✗ After end date`);
+            }
           }
-          return c;
-        });
 
-        // Update local state immediately for responsiveness
-        setMonth((prev) => (prev ? { ...prev, cartoes: updatedCartoes } : null));
+          // Check frequency
+          if (applies) {
+            const frequency = template.frequency || 'mensal';
+            if (frequency === 'mensal') {
+              applies = true;
+            } else if (frequency === 'anual') {
+              if (template.start_date) {
+                const startDate = new Date(template.start_date);
+                applies = monthNum === startDate.getMonth() + 1;
+              }
+            } else {
+              // bimestral, trimestral, semestral
+              if (template.start_date) {
+                const startDate = new Date(template.start_date);
+                const startYear = startDate.getFullYear();
+                const startMonth = startDate.getMonth() + 1;
+                const monthsSinceStart = (year - startYear) * 12 + (monthNum - startMonth);
+                if (monthsSinceStart >= 0) {
+                  let interval = 1;
+                  if (frequency === 'bimestral') interval = 2;
+                  else if (frequency === 'trimestral') interval = 3;
+                  else if (frequency === 'semestral') interval = 6;
+                  applies = monthsSinceStart % interval === 0;
+                } else {
+                  applies = false;
+                }
+              }
+            }
+          }
 
-        const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${month.id}`);
-        await updateDoc(monthRef, {
-          cartoes: sanitizeForFirestore(updatedCartoes),
-          updatedAt: serverTimestamp(),
-        });
+          if (applies) {
+            console.log(`  ✓ Template applies to ${monthRecord.id}`);
 
-        // Recalculate and save totals
-        await recalculateTotals();
-      }
-    },
-    [month, activeWorkspace, recalculateTotals, deleteInstallmentGroup]
-  );
+            // Check if instance already exists
+            const existingExpenses = await db.getAllExpenseInstances(monthRecord.id, activeWorkspace.id);
+            const existingInstance = existingExpenses.find(e => e.template_id === templateId);
 
-  /**
-   * Navigation functions
-   */
-  const goToNextMonth = useCallback(() => {
-    const nextMonthId = getNextMonthId(currentMonthId);
-    setCurrentMonthId(nextMonthId);
-  }, [currentMonthId]);
+            if (existingInstance) {
+              console.log(`  ⏭️ Instance already exists for ${monthRecord.id} (ID: ${existingInstance.id})`);
+              skippedCount++;
+            } else {
+              const newId = generateUUID();
+              console.log(`  🆕 Creating NEW instance for ${monthRecord.id} (ID: ${newId})`);
 
-  const goToPreviousMonth = useCallback(() => {
-    const prevMonthId = getPreviousMonthId(currentMonthId);
-    setCurrentMonthId(prevMonthId);
-  }, [currentMonthId]);
+              const expenseInstance: ExpenseInstance = {
+                id: newId,
+                month_id: monthRecord.id,
+                workspace_id: activeWorkspace.id,
+                template_id: template.id,
+                name: template.name,
+                value_planned: template.value_formula,
+                value_calculated: template.value_calculated,
+                is_paid: false,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              };
 
-  const goToMonth = useCallback((monthId: string) => {
-    if (isValidMonthId(monthId)) {
-      setCurrentMonthId(monthId);
-    }
-  }, []);
-
-  // Set up real-time listener for month changes
-  useEffect(() => {
-    if (!activeWorkspace || !isValidMonthId(currentMonthId)) {
-      setMonth(null);
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    const monthRef = doc(db, `workspaces/${activeWorkspace.id}/months/${currentMonthId}`);
-
-    // Set up real-time listener
-    const unsubscribe = onSnapshot(
-      monthRef,
-      async (snapshot) => {
-        if (snapshot.exists()) {
-          // Month exists, update state with latest data
-          const monthData = { id: snapshot.id, ...snapshot.data() } as Month;
-          setMonth(monthData);
-          setLoading(false);
-        } else {
-          // Month doesn't exist, create it
-          try {
-            const newMonth = await createMonth(currentMonthId);
-            setMonth(newMonth);
-            setLoading(false);
-          } catch (err: any) {
-            console.error('Error creating month:', err);
-            setError(err.message || 'Error creating month');
-            setLoading(false);
+              await db.insertExpenseInstance(expenseInstance);
+              console.log(`  ✅ Created instance for ${monthRecord.id} (ID: ${newId})`);
+              createdCount++;
+            }
+          } else {
+            console.log(`  ✗ Template does NOT apply to ${monthRecord.id}`);
+            notApplicableCount++;
           }
         }
-      },
-      (error) => {
-        console.error('Error listening to month:', error);
-        setError(error.message || 'Error listening to month updates');
-        setLoading(false);
+
+        console.log("\n🔄 [backfillTemplateInstances] Summary:");
+        console.log(`  - Created: ${createdCount}`);
+        console.log(`  - Skipped (already exists): ${skippedCount}`);
+        console.log(`  - Not applicable: ${notApplicableCount}`);
+        console.log("🔄 [backfillTemplateInstances] Completed\n");
+
+        // Reload expenses if we're still on the same month
+        await loadExpenses();
+
+        // Emit event to notify other components
+        dataEvents.emit('expenses:changed');
+
+        // Trigger sync
+        syncNow();
+      } catch (err: any) {
+        console.error("❌ Error in backfillTemplateInstances:", err);
       }
+    },
+    [activeWorkspace, currentMonthId, loadExpenses, syncNow]
+  );
+
+  /**
+   * Backfill purchase instances for existing months
+   * Fetches template directly from SQLite to avoid state race conditions
+   */
+  const backfillPurchaseInstances = useCallback(
+    async (templateId: string) => {
+      if (!activeWorkspace) return;
+
+      console.log("🔄 [backfillPurchaseInstances] Starting for template:", templateId);
+      console.log("🔄 [backfillPurchaseInstances] Current month:", currentMonthId);
+
+      try {
+        // Get template from SQLite (not from state to avoid race condition)
+        const template = await db.getRecurringTemplateById(templateId);
+
+        if (!template) {
+          console.error("❌ Template not found in SQLite:", templateId);
+          return;
+        }
+
+        if (template.type !== 'card_purchase') {
+          console.error("❌ Template is not card_purchase type:", template.type);
+          return;
+        }
+
+        console.log("📋 [backfillPurchaseInstances] Template:", template.name);
+        console.log(`   - Active: ${template.is_active}`);
+        console.log(`   - Frequency: ${template.frequency}`);
+
+        if (!template.is_active) {
+          console.log("⚠️ Template is inactive, skipping backfill");
+          return;
+        }
+
+        const metadata = (template.metadata || {}) as any;
+        const targetCardId = metadata.card_id;
+
+        if (!targetCardId) {
+          console.error("❌ Template has no card_id in metadata");
+          return;
+        }
+
+        // Get all existing months (include past, present, and future)
+        const allMonths = await db.getAllMonths(activeWorkspace.id);
+
+        console.log(
+          "🔄 [backfillPurchaseInstances] Found",
+          allMonths.length,
+          "total months:",
+          allMonths.map(m => m.id).join(', ')
+        );
+
+        // For each existing month, check if template applies
+        let createdCount = 0;
+        let skippedCount = 0;
+        let notApplicableCount = 0;
+
+        for (const monthRecord of allMonths) {
+          console.log(`\n📅 [backfillPurchaseInstances] Checking month: ${monthRecord.id}`);
+
+          const [year, monthNum] = monthRecord.id.split('-').map(Number);
+
+          // Check if template applies (same logic as shouldApplyInMonth)
+          let applies = true;
+
+          // Check start date
+          if (template.start_date) {
+            const startDate = new Date(template.start_date);
+            const startYear = startDate.getFullYear();
+            const startMonth = startDate.getMonth() + 1;
+            const targetYearMonth = year * 12 + monthNum;
+            const startYearMonth = startYear * 12 + startMonth;
+            if (targetYearMonth < startYearMonth) {
+              applies = false;
+              console.log(`  ✗ Before start date`);
+            }
+          }
+
+          // Check end date
+          if (applies && template.end_date) {
+            const endDate = new Date(template.end_date);
+            const endYear = endDate.getFullYear();
+            const endMonth = endDate.getMonth() + 1;
+            const targetYearMonth = year * 12 + monthNum;
+            const endYearMonth = endYear * 12 + endMonth;
+            if (targetYearMonth > endYearMonth) {
+              applies = false;
+              console.log(`  ✗ After end date`);
+            }
+          }
+
+          // Check frequency
+          if (applies) {
+            const frequency = template.frequency || 'mensal';
+            if (frequency === 'mensal') {
+              applies = true;
+            } else if (frequency === 'anual') {
+              if (template.start_date) {
+                const startDate = new Date(template.start_date);
+                applies = monthNum === startDate.getMonth() + 1;
+              }
+            } else {
+              if (template.start_date) {
+                const startDate = new Date(template.start_date);
+                const startYear = startDate.getFullYear();
+                const startMonth = startDate.getMonth() + 1;
+                const monthsSinceStart = (year - startYear) * 12 + (monthNum - startMonth);
+                if (monthsSinceStart >= 0) {
+                  let interval = 1;
+                  if (frequency === 'bimestral') interval = 2;
+                  else if (frequency === 'trimestral') interval = 3;
+                  else if (frequency === 'semestral') interval = 6;
+                  applies = monthsSinceStart % interval === 0;
+                } else {
+                  applies = false;
+                }
+              }
+            }
+          }
+
+          if (applies) {
+            console.log(`  ✓ Template applies to ${monthRecord.id}`);
+
+            // Get all cards from workspace (cards are global now)
+            const allCards = await db.getAllCards(activeWorkspace.id);
+            const targetCard = allCards.find(c => c.id === targetCardId);
+
+            if (!targetCard) {
+              console.log(`  ⚠️ Card ${targetCardId} not found in workspace, skipping...`);
+              notApplicableCount++;
+              continue;
+            }
+
+            // Check if purchase already exists for this template+card+month
+            const existingPurchases = await db.getAllPurchasesByCardAndMonth(targetCardId, monthRecord.id);
+            const existingInstance = existingPurchases.find(p => p.template_id === templateId);
+
+            if (existingInstance) {
+              console.log(`  ⏭️ Purchase already exists for ${monthRecord.id} (ID: ${existingInstance.id})`);
+              skippedCount++;
+            } else {
+              const newId = generateUUID();
+              console.log(`  🆕 Creating NEW purchase for ${monthRecord.id} (ID: ${newId})`);
+
+              const purchase: Purchase = {
+                id: newId,
+                card_id: targetCardId,
+                month_id: monthId,
+                template_id: template.id,
+                description: template.name,
+                total_value: template.value_calculated,
+                current_installment: 1,
+                total_installments: 1,
+                is_marked: true,
+                purchase_date: new Date().toISOString().split('T')[0],
+                purchase_group_id: null,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              };
+
+              await db.insertPurchase(purchase);
+              console.log(`  ✅ Created purchase for ${monthRecord.id} (ID: ${newId})`);
+              createdCount++;
+            }
+          } else {
+            console.log(`  ✗ Template does NOT apply to ${monthRecord.id}`);
+            notApplicableCount++;
+          }
+        }
+
+        console.log("\n🔄 [backfillPurchaseInstances] Summary:");
+        console.log(`  - Created: ${createdCount}`);
+        console.log(`  - Skipped (already exists): ${skippedCount}`);
+        console.log(`  - Not applicable: ${notApplicableCount}`);
+        console.log("🔄 [backfillPurchaseInstances] Completed\n");
+
+        // Reload cards to get updated purchases
+        await loadCards();
+
+        // Emit event to notify other components
+        dataEvents.emit('purchases:changed');
+
+        // Trigger sync
+        syncNow();
+      } catch (err: any) {
+        console.error("❌ Error in backfillPurchaseInstances:", err);
+      }
+    },
+    [activeWorkspace, currentMonthId, loadCards, syncNow]
+  );
+
+  /**
+   * Add card
+   */
+  const addCard = useCallback(
+    async (card: Omit<CardInsert, "id" | "workspace_id">) => {
+      if (!activeWorkspace) return;
+
+      const cardData: Card = {
+        id: generateUUID(),
+        workspace_id: activeWorkspace.id,
+        name: card.name,
+        total_limit: card.total_limit || 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      await db.insertCard(cardData);
+      await loadCards();
+
+      // Emit event to notify other components
+      dataEvents.emit('cards:changed');
+
+      syncNow();
+    },
+    [activeWorkspace, loadCards, syncNow]
+  );
+
+  /**
+   * Update card
+   */
+  const updateCard = useCallback(
+    async (id: string, data: Partial<Card>) => {
+      if (!activeWorkspace) return;
+
+      await db.updateCard(id, data);
+      await loadCards();
+
+      // Emit event to notify other components
+      dataEvents.emit('cards:changed');
+
+      syncNow();
+    },
+    [activeWorkspace, loadCards, syncNow]
+  );
+
+  /**
+   * Delete card
+   */
+  const deleteCard = useCallback(
+    async (id: string) => {
+      if (!activeWorkspace) return;
+
+      // Use sync service to delete from Supabase → SQLite
+      await syncOps.deleteCardSync(id, activeWorkspace.id);
+      await loadCards();
+
+      // Emit event to notify other components
+      dataEvents.emit('cards:changed');
+    },
+    [activeWorkspace, loadCards]
+  );
+
+  /**
+   * Add purchase
+   */
+  const addPurchase = useCallback(
+    async (
+      cardId: string,
+      purchase: Omit<PurchaseInsert, "id" | "card_id" | "month_id">
+    ) => {
+      if (!activeWorkspace || !currentMonthId) return;
+
+      const purchaseData: Purchase = {
+        id: generateUUID(),
+        card_id: cardId,
+        month_id: currentMonthId,
+        description: purchase.description,
+        total_value: purchase.total_value,
+        current_installment: purchase.current_installment || 1,
+        total_installments: purchase.total_installments || 1,
+        is_marked: purchase.is_marked !== false,
+        purchase_date:
+          purchase.purchase_date || new Date().toISOString().split("T")[0],
+        template_id: purchase.template_id || null,
+        purchase_group_id: purchase.purchase_group_id || null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      await db.insertPurchase(purchaseData);
+      await loadCards();
+
+      // Emit event to notify other components
+      dataEvents.emit('purchases:changed');
+
+      syncNow();
+    },
+    [activeWorkspace, currentMonthId, loadCards, syncNow]
+  );
+
+  /**
+   * Update purchase
+   */
+  const updatePurchase = useCallback(
+    async (id: string, data: Partial<Purchase>) => {
+      await db.updatePurchase(id, data);
+      await loadCards();
+
+      // Emit event to notify other components
+      dataEvents.emit('purchases:changed');
+
+      syncNow();
+    },
+    [loadCards, syncNow]
+  );
+
+  /**
+   * Delete purchase
+   */
+  const deletePurchase = useCallback(async (id: string) => {
+    // Use sync service to delete from Supabase → SQLite
+    await syncOps.deletePurchaseSync(id);
+    await loadCards();
+
+    // Emit event to notify other components
+    dataEvents.emit('purchases:changed');
+  }, [loadCards]);
+
+  // Calculate totals
+  const total_expenses = expenses.reduce(
+    (sum, e) => sum + (e.value_calculated || 0),
+    0
+  );
+
+  const total_cards = cards.reduce((sum, card) => {
+    const purchases = card.purchases || [];
+    return (
+      sum +
+      purchases.reduce((s: number, p: Purchase) => {
+        return p.is_marked ? s + (p.total_value || 0) / (p.total_installments || 1) : s;
+      }, 0)
     );
+  }, 0);
 
-    // Cleanup: unsubscribe when month changes or component unmounts
-    return () => unsubscribe();
-  }, [activeWorkspace, currentMonthId, createMonth]);
+  const sobra = (month?.saldo_inicial || 0) - total_expenses - total_cards;
 
   return {
     month,
+    expenses,
+    cards,
     loading,
     error,
     currentMonthId,
     goToNextMonth,
     goToPreviousMonth,
     goToMonth,
-    recalculateTotals,
     updateSaldoInicial,
-    addDespesa,
-    updateDespesa,
-    deleteDespesa,
-    addCartao,
-    updateCartao,
-    deleteCartao,
-    addCompra,
-    updateCompra,
-    deleteCompra,
+    addExpense,
+    updateExpense,
+    deleteExpense,
+    addCard,
+    updateCard,
+    deleteCard,
+    addPurchase,
+    updatePurchase,
+    deletePurchase,
+    total_expenses,
+    total_cards,
+    sobra,
+    backfillTemplateInstances,
+    backfillPurchaseInstances,
   };
 }

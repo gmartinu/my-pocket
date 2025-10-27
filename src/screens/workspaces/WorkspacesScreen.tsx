@@ -128,8 +128,8 @@ export default function WorkspacesScreen() {
 
         {workspaces.map((workspace) => {
           const isActive = activeWorkspace?.id === workspace.id;
-          const isOwner = workspace.owner === user?.uid;
-          const userMember = workspace.members.find((m) => m.userId === user?.uid);
+          const isOwner = workspace.owner === user?.id;
+          const userMember = workspace.members.find((m) => m.userId === user?.id);
           const userRole = userMember?.role || "viewer";
 
           return (

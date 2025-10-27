@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, Dimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, Card, SegmentedButtons, useTheme, Surface, ActivityIndicator } from 'react-native-paper';
-import { VictoryChart, VictoryLine, VictoryPie, VictoryBar, VictoryTheme, VictoryAxis, VictoryLabel } from 'victory-native';
+// Victory charts temporarily disabled - TODO: fix victory-native
+// @ts-ignore
+// import { VictoryChart, VictoryLine, VictoryPie, VictoryBar, VictoryAxis } from 'victory-native';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
-import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore';
-import { db } from '../../config/firebase';
+import { supabase } from '../../config/supabase';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
@@ -47,40 +48,57 @@ export default function ReportsScreen() {
 
     setLoading(true);
     try {
+      console.log('📊 [ReportsScreen] Loading reports data for workspace:', activeWorkspace.id);
+
       // Calculate date range based on period
       const monthsToLoad = period === '3m' ? 3 : period === '6m' ? 6 : 12;
 
-      // Query months from Firestore
-      const monthsRef = collection(db, 'workspaces', activeWorkspace.id, 'months');
-      const q = query(monthsRef, orderBy('criadoEm', 'desc'), limit(monthsToLoad));
-      const snapshot = await getDocs(q);
+      // Query months from Supabase (using the view month_totals)
+      const { data: monthsData, error: monthsError } = await supabase
+        .from('month_totals')
+        .select('*')
+        .eq('workspace_id', activeWorkspace.id)
+        .order('year', { ascending: false })
+        .order('month', { ascending: false })
+        .limit(monthsToLoad);
+
+      if (monthsError) throw monthsError;
+
+      console.log('📊 [ReportsScreen] Loaded months:', monthsData?.length);
 
       // Process monthly data
       const months: MonthData[] = [];
       const categories: { [key: string]: number } = {};
 
-      snapshot.docs.forEach((doc) => {
-        const data = doc.data();
-        const monthName = data.nome || doc.id;
+      if (monthsData) {
+        for (const monthData of monthsData) {
+          const monthName = monthData.month_name || monthData.month_id;
 
-        const despesasTotal = data.despesas?.reduce((sum: number, d: any) => sum + (d.valorCalculado || 0), 0) || 0;
-        const cartoesTotal = data.cartoes?.reduce((sum: number, c: any) => {
-          return sum + (c.compras?.reduce((s: number, comp: any) => s + (comp.valorParcela || 0), 0) || 0);
-        }, 0) || 0;
+          const despesasTotal = monthData.total_expenses || 0;
+          const cartoesTotal = monthData.total_cards || 0;
 
-        months.push({
-          month: monthName,
-          total: despesasTotal + cartoesTotal,
-          despesas: despesasTotal,
-          cartoes: cartoesTotal,
-        });
+          months.push({
+            month: monthName,
+            total: despesasTotal + cartoesTotal,
+            despesas: despesasTotal,
+            cartoes: cartoesTotal,
+          });
 
-        // Extract categories (if available)
-        data.despesas?.forEach((d: any) => {
-          const cat = d.categoria || 'Outros';
-          categories[cat] = (categories[cat] || 0) + (d.valorCalculado || 0);
-        });
-      });
+          // Load expense instances to extract categories
+          const { data: expenses } = await supabase
+            .from('expense_instances')
+            .select('metadata')
+            .eq('month_id', monthData.month_id)
+            .eq('workspace_id', activeWorkspace.id);
+
+          // Extract categories from metadata
+          expenses?.forEach((expense: any) => {
+            const cat = expense.metadata?.categoria || 'Outros';
+            const value = expense.metadata?.value_calculated || 0;
+            categories[cat] = (categories[cat] || 0) + value;
+          });
+        }
+      }
 
       // Reverse to show oldest to newest
       months.reverse();
@@ -91,6 +109,8 @@ export default function ReportsScreen() {
         y: value,
         label: `${name}\nR$ ${value.toFixed(0)}`,
       }));
+
+      console.log('📊 [ReportsScreen] Categories found:', catData.length);
 
       // Calculate insights
       const total = months.reduce((sum, m) => sum + m.total, 0);
@@ -117,8 +137,10 @@ export default function ReportsScreen() {
         lowestMonth: lowest,
         trend,
       });
+
+      console.log('✅ [ReportsScreen] Reports data loaded successfully');
     } catch (error) {
-      console.error('Failed to load reports:', error);
+      console.error('❌ [ReportsScreen] Failed to load reports:', error);
     } finally {
       setLoading(false);
     }
@@ -184,110 +206,49 @@ export default function ReportsScreen() {
           </Card>
         </View>
 
-        {/* Monthly Evolution Chart */}
+        {/* Monthly Evolution Chart - Temporarily disabled */}
+        {/* TODO: Fix victory-native installation */}
         {monthlyData.length > 0 && (
           <Surface style={styles.chartCard} elevation={1}>
             <Text variant="titleMedium" style={styles.chartTitle}>
               Evolução de Gastos Mensais
             </Text>
-            <VictoryChart
-              theme={VictoryTheme.material}
-              width={SCREEN_WIDTH - 48}
-              height={220}
-              padding={{ top: 20, bottom: 50, left: 60, right: 20 }}
-            >
-              <VictoryAxis
-                style={{
-                  axis: { stroke: theme.colors.outline },
-                  tickLabels: { fill: theme.colors.onSurface, fontSize: 10, angle: -45 },
-                }}
-              />
-              <VictoryAxis
-                dependentAxis
-                style={{
-                  axis: { stroke: theme.colors.outline },
-                  tickLabels: { fill: theme.colors.onSurface, fontSize: 10 },
-                  grid: { stroke: theme.colors.outlineVariant, strokeDasharray: '4,4' },
-                }}
-              />
-              <VictoryLine
-                data={monthlyData}
-                x="month"
-                y="total"
-                style={{
-                  data: { stroke: theme.colors.primary, strokeWidth: 3 },
-                }}
-              />
-            </VictoryChart>
+            <View style={{ padding: 20, alignItems: 'center' }}>
+              <Text variant="bodyMedium" style={{ opacity: 0.6 }}>
+                Gráfico temporariamente desabilitado
+              </Text>
+              <Text variant="bodySmall" style={{ opacity: 0.4, marginTop: 8 }}>
+                (Instalando victory-native...)
+              </Text>
+            </View>
           </Surface>
         )}
 
-        {/* Category Distribution Chart */}
+        {/* Category Distribution Chart - Temporarily disabled */}
         {categoryData.length > 0 && (
           <Surface style={styles.chartCard} elevation={1}>
             <Text variant="titleMedium" style={styles.chartTitle}>
               Distribuição por Categoria
             </Text>
-            <View style={styles.pieChartContainer}>
-              <VictoryPie
-                data={categoryData}
-                colorScale={['#4CAF50', '#2196F3', '#FF9800', '#F44336', '#9C27B0', '#00BCD4']}
-                labelRadius={({ innerRadius }) => (innerRadius as number) + 30}
-                style={{
-                  labels: { fill: theme.colors.onSurface, fontSize: 10 },
-                }}
-                width={SCREEN_WIDTH - 48}
-                height={280}
-                padding={{ top: 20, bottom: 20, left: 20, right: 20 }}
-              />
+            <View style={{ padding: 20, alignItems: 'center' }}>
+              <Text variant="bodyMedium" style={{ opacity: 0.6 }}>
+                Gráfico temporariamente desabilitado
+              </Text>
             </View>
           </Surface>
         )}
 
-        {/* Despesas vs Cartões Comparison */}
+        {/* Despesas vs Cartões Comparison - Temporarily disabled */}
         {monthlyData.length > 0 && (
           <Surface style={styles.chartCard} elevation={1}>
             <Text variant="titleMedium" style={styles.chartTitle}>
               Despesas vs Cartões (Últimos 3 Meses)
             </Text>
-            <VictoryChart
-              theme={VictoryTheme.material}
-              width={SCREEN_WIDTH - 48}
-              height={220}
-              domainPadding={{ x: 40 }}
-              padding={{ top: 20, bottom: 50, left: 60, right: 20 }}
-            >
-              <VictoryAxis
-                style={{
-                  axis: { stroke: theme.colors.outline },
-                  tickLabels: { fill: theme.colors.onSurface, fontSize: 10 },
-                }}
-              />
-              <VictoryAxis
-                dependentAxis
-                style={{
-                  axis: { stroke: theme.colors.outline },
-                  tickLabels: { fill: theme.colors.onSurface, fontSize: 10 },
-                  grid: { stroke: theme.colors.outlineVariant, strokeDasharray: '4,4' },
-                }}
-              />
-              <VictoryBar
-                data={monthlyData.slice(-3).map(m => ({ month: m.month, amount: m.despesas, type: 'Despesas' }))}
-                x="month"
-                y="amount"
-                style={{
-                  data: { fill: theme.colors.primary },
-                }}
-              />
-              <VictoryBar
-                data={monthlyData.slice(-3).map(m => ({ month: m.month, amount: m.cartoes, type: 'Cartões' }))}
-                x="month"
-                y="amount"
-                style={{
-                  data: { fill: theme.colors.secondary },
-                }}
-              />
-            </VictoryChart>
+            <View style={{ padding: 20, alignItems: 'center' }}>
+              <Text variant="bodyMedium" style={{ opacity: 0.6 }}>
+                Gráfico temporariamente desabilitado
+              </Text>
+            </View>
           </Surface>
         )}
 

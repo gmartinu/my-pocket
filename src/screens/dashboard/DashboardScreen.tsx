@@ -5,8 +5,6 @@ import {
   Surface,
   useTheme,
   Button,
-  Banner,
-  IconButton,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useFocusEffect } from "@react-navigation/native";
@@ -17,7 +15,6 @@ import BalanceCard from "../../components/BalanceCard";
 import SummaryCard from "../../components/SummaryCard";
 import { useWorkspace } from "../../contexts/WorkspaceContext";
 import { useMonth } from "../../hooks/useMonth";
-import { useSync } from "../../contexts/SyncContext";
 import { formatCurrency } from "../../utils/calculations";
 import { getNextMonthId, formatMonthName } from "../../utils/dateUtils";
 
@@ -25,7 +22,6 @@ export default function DashboardScreen() {
   const theme = useTheme();
   const navigation = useNavigation<MainTabNavigationProp>();
   const { activeWorkspace } = useWorkspace();
-  const { syncStatus, isOnline } = useSync();
   const {
     month,
     loading,
@@ -33,17 +29,10 @@ export default function DashboardScreen() {
     goToNextMonth,
     goToPreviousMonth,
     updateSaldoInicial,
-    recalculateTotals,
+    total_expenses,
+    total_cards,
+    sobra,
   } = useMonth();
-
-  // Reload totals when screen gains focus
-  useFocusEffect(
-    React.useCallback(() => {
-      if (month && !loading) {
-        recalculateTotals();
-      }
-    }, [month?.id, recalculateTotals, loading])
-  );
 
   if (loading) {
     return (
@@ -75,54 +64,16 @@ export default function DashboardScreen() {
   const nextMonthId = getNextMonthId(currentMonthId);
   const nextMonthName = formatMonthName(nextMonthId);
 
-  // Get sync status icon and color
-  const getSyncIcon = () => {
-    switch (syncStatus) {
-      case "syncing":
-        return "cloud-sync";
-      case "error":
-        return "cloud-off-outline";
-      default:
-        return "cloud-check-outline";
-    }
-  };
-
-  const getSyncColor = () => {
-    switch (syncStatus) {
-      case "syncing":
-        return theme.colors.primary;
-      case "error":
-        return theme.colors.error;
-      default:
-        return theme.colors.primary;
-    }
-  };
-
   return (
     <SafeAreaView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
       edges={["top"]}
     >
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Offline Banner */}
-        {!isOnline && (
-          <Banner visible={!isOnline} icon="wifi-off">
-            You're offline. Changes will sync when you reconnect.
-          </Banner>
-        )}
-
         <SafeAreaView style={styles.header} edges={["left", "right"]}>
-          <View style={styles.headerLeft}>
-            <Text variant="headlineMedium" style={styles.title}>
-              Dashboard
-            </Text>
-            <IconButton
-              icon={getSyncIcon()}
-              iconColor={getSyncColor()}
-              size={20}
-              animated
-            />
-          </View>
+          <Text variant="headlineMedium" style={styles.title}>
+            Dashboard
+          </Text>
           <WorkspaceSelector />
         </SafeAreaView>
 
@@ -137,16 +88,16 @@ export default function DashboardScreen() {
 
           {/* Balance Card */}
           <BalanceCard
-            saldoInicial={month.saldoInicial}
+            saldoInicial={month.saldo_inicial || 0}
             onUpdateSaldo={updateSaldoInicial}
           />
 
           {/* Summary Card */}
           <SummaryCard
-            saldoInicial={month.saldoInicial}
-            totalDespesas={month.totalDespesas}
-            totalCartoes={month.totalCartoes}
-            sobra={month.sobra}
+            saldoInicial={month.saldo_inicial || 0}
+            totalDespesas={total_expenses}
+            totalCartoes={total_cards}
+            sobra={sobra}
           />
 
           {/* Quick Actions */}
@@ -191,13 +142,13 @@ export default function DashboardScreen() {
                   styles.projectionValue,
                   {
                     color:
-                      month.sobra >= 0
+                      sobra >= 0
                         ? theme.colors.primary
                         : theme.colors.error,
                   },
                 ]}
               >
-                {formatCurrency(month.sobra)}
+                {formatCurrency(sobra)}
               </Text>
             </View>
             <Text variant="bodySmall" style={styles.projectionNote}>
@@ -232,11 +183,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: 16,
     paddingBottom: 8,
-  },
-  headerLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
   },
   title: {
     fontWeight: "bold",

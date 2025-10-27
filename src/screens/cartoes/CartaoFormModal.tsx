@@ -10,14 +10,14 @@ import {
   HelperText,
   Dialog,
 } from 'react-native-paper';
-import { Cartao } from '../../types/month';
+import { Card } from '../../types/supabase';
 import { evaluateFormula, formatCurrency } from '../../utils/calculations';
 
 interface CartaoFormModalProps {
   visible: boolean;
-  cartao?: Cartao | null;
+  cartao?: Card | null;
   onDismiss: () => void;
-  onSave: (data: { nome: string; limiteTotal: number; compras: any[] }) => Promise<void>;
+  onSave: (data: { name: string; total_limit: number }) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
 }
 
@@ -39,8 +39,8 @@ export default function CartaoFormModal({
   useEffect(() => {
     if (visible) {
       if (cartao) {
-        setNome(cartao.nome);
-        setLimiteTotal(String(cartao.limiteTotal));
+        setNome(cartao.name);
+        setLimiteTotal(String(cartao.total_limit || 0));
       } else {
         setNome('');
         setLimiteTotal('');
@@ -103,9 +103,8 @@ export default function CartaoFormModal({
       }
 
       await onSave({
-        nome: nome.trim(),
-        limiteTotal: limiteCalculado,
-        compras: cartao?.compras || [],
+        name: nome.trim(),
+        total_limit: limiteCalculado,
       });
       onDismiss();
     } catch (err: any) {

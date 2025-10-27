@@ -11,20 +11,17 @@ import {
   HelperText,
   Dialog,
 } from 'react-native-paper';
-import { Despesa } from '../../types/month';
+import { ExpenseInstance } from '../../types/supabase';
 import { evaluateFormula, formatCurrency } from '../../utils/calculations';
-import { RecurrenceSelector } from '../../components/RecurrenceSelector';
-import { RecurringExpenseConfig } from '../../types/recurring';
 
 interface DespesaFormModalProps {
   visible: boolean;
-  despesa?: Despesa | null;
+  despesa?: ExpenseInstance | null;
   onDismiss: () => void;
   onSave: (data: {
-    nome: string;
-    valorPlanejado: string;
-    pago: boolean;
-    recurring?: RecurringExpenseConfig;
+    name: string;
+    value_planned: string;
+    is_paid: boolean;
   }) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
 }
@@ -40,9 +37,6 @@ export default function DespesaFormModal({
   const [nome, setNome] = useState('');
   const [valorPlanejado, setValorPlanejado] = useState('');
   const [pago, setPago] = useState(false);
-  const [recurring, setRecurring] = useState<RecurringExpenseConfig>({
-    isRecurring: false,
-  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [deleteDialogVisible, setDeleteDialogVisible] = useState(false);
@@ -51,15 +45,13 @@ export default function DespesaFormModal({
   useEffect(() => {
     if (visible) {
       if (despesa) {
-        setNome(despesa.nome);
-        setValorPlanejado(String(despesa.valorPlanejado));
-        setPago(despesa.pago);
-        setRecurring(despesa.recurring || { isRecurring: false });
+        setNome(despesa.name);
+        setValorPlanejado(String(despesa.value_planned));
+        setPago(despesa.is_paid || false);
       } else {
         setNome('');
         setValorPlanejado('');
         setPago(false);
-        setRecurring({ isRecurring: false });
       }
       setError('');
       setDeleteDialogVisible(false);
@@ -113,10 +105,9 @@ export default function DespesaFormModal({
 
     try {
       await onSave({
-        nome: nome.trim(),
-        valorPlanejado,
-        pago,
-        recurring: recurring.isRecurring ? recurring : undefined,
+        name: nome.trim(),
+        value_planned: valorPlanejado,
+        is_paid: pago,
       });
       onDismiss();
     } catch (err: any) {
@@ -171,7 +162,7 @@ export default function DespesaFormModal({
             value={nome}
             onChangeText={setNome}
             mode="outlined"
-            placeholder="Ex: Aluguel, Internet, Mercado"
+            placeholder="Ex: Uber, Mercado, Restaurante"
             maxLength={50}
             disabled={loading}
             style={styles.input}
@@ -212,11 +203,14 @@ export default function DespesaFormModal({
             />
           </View>
 
-          <RecurrenceSelector
-            config={recurring}
-            onChange={setRecurring}
-            disabled={loading}
-          />
+          {/* Show badge if from template */}
+          {despesa?.template_id && (
+            <View style={styles.templateBadge}>
+              <Text variant="bodySmall" style={{ opacity: 0.6 }}>
+                🔁 Esta despesa foi criada automaticamente
+              </Text>
+            </View>
+          )}
 
           <View style={styles.buttons}>
             {isEditMode && onDelete && (
@@ -262,6 +256,11 @@ export default function DespesaFormModal({
         <Dialog.Title>Confirmar exclusão</Dialog.Title>
         <Dialog.Content>
           <Text>Deseja realmente excluir esta despesa?</Text>
+          {despesa?.template_id && (
+            <Text variant="bodySmall" style={{ marginTop: 8, opacity: 0.7 }}>
+              💡 Será removida apenas deste mês. Para parar a recorrência, vá em Recorrentes.
+            </Text>
+          )}
         </Dialog.Content>
         <Dialog.Actions>
           <Button
@@ -306,6 +305,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginVertical: 16,
+  },
+  templateBadge: {
+    backgroundColor: 'rgba(33, 150, 243, 0.1)',
+    padding: 12,
+    borderRadius: 8,
+    marginVertical: 8,
   },
   buttons: {
     flexDirection: 'row',

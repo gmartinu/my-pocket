@@ -1,5 +1,3 @@
-import { Timestamp } from 'firebase/firestore';
-
 // Workspace member role
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 
@@ -9,17 +7,20 @@ export interface WorkspaceMember {
   email: string;
   displayName: string;
   role: WorkspaceRole;
-  addedAt: Date | Timestamp;
+  addedAt: string; // ISO string
 }
 
-// Workspace document
+// Workspace document (matches Supabase schema)
 export interface Workspace {
   id: string;
   name: string;
-  owner: string;
-  members: WorkspaceMember[];
-  createdAt: Date | Timestamp;
-  updatedAt: Date | Timestamp;
+  owner_id: string; // Supabase field
+  owner?: string; // Compatibility with old code
+  members?: WorkspaceMember[]; // Loaded separately
+  created_at: string; // Supabase field
+  updated_at: string; // Supabase field
+  createdAt?: string; // Compatibility with old code
+  updatedAt?: string; // Compatibility with old code
 }
 
 // Workspace Context data

@@ -1,30 +1,4 @@
 /**
- * Translates Firebase error codes to user-friendly Portuguese messages
- */
-export function translateFirebaseError(errorCode: string): string {
-  const errorMessages: Record<string, string> = {
-    // Auth errors
-    'auth/invalid-email': 'Email inválido',
-    'auth/user-disabled': 'Usuário desabilitado',
-    'auth/user-not-found': 'Usuário não encontrado',
-    'auth/wrong-password': 'Senha incorreta',
-    'auth/email-already-in-use': 'Email já cadastrado',
-    'auth/weak-password': 'Senha muito fraca (mínimo 6 caracteres)',
-    'auth/operation-not-allowed': 'Operação não permitida',
-    'auth/invalid-credential': 'Credenciais inválidas',
-    'auth/too-many-requests': 'Muitas tentativas. Tente novamente mais tarde',
-    'auth/network-request-failed': 'Erro de conexão. Verifique sua internet',
-
-    // Firestore errors
-    'permission-denied': 'Permissão negada',
-    'unavailable': 'Serviço temporariamente indisponível',
-    'not-found': 'Documento não encontrado',
-  };
-
-  return errorMessages[errorCode] || 'Erro desconhecido. Tente novamente';
-}
-
-/**
  * Validates email format
  */
 export function validateEmail(email: string): string | null {

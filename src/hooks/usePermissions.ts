@@ -32,11 +32,11 @@ export function usePermissions(workspace: Workspace | null): PermissionsResult {
     }
 
     // Find current user in members array
-    const currentMember = workspace.members.find((m) => m.userId === user.uid);
+    const currentMember = workspace.members?.find((m) => m.userId === user.id);
     const role = currentMember?.role || null;
 
     // Check if user is owner
-    const isOwner = workspace.owner === user.uid || role === 'owner';
+    const isOwner = workspace.owner === user.id || role === 'owner';
 
     // Owner and Editor can edit
     const canEdit = isOwner || role === 'editor';

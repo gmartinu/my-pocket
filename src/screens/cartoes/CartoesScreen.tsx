@@ -1,24 +1,28 @@
-import React, { useState } from 'react';
-import { View, StyleSheet, ScrollView, RefreshControl } from 'react-native';
+import React, { useState, useMemo } from 'react';
+import { View, StyleSheet, ScrollView, RefreshControl, FlatList } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   Text,
   FAB,
-  Card,
+  Card as PaperCard,
   Portal,
   Dialog,
   Button,
   useTheme,
   Snackbar,
+  SegmentedButtons,
 } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import CartaoCard from '../../components/CartaoCard';
 import CartaoFormModal from './CartaoFormModal';
 import CompraFormModal from './CompraFormModal';
+import CompraRecorrenteCard from '../../components/CompraRecorrenteCard';
+import CompraRecorrenteFormModal from './CompraRecorrenteFormModal';
 import { useMonth } from '../../hooks/useMonth';
+import { useRecurringTemplates } from '../../hooks/useRecurringTemplates';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { usePermissions } from '../../hooks/usePermissions';
-import { Cartao, Compra } from '../../types/month';
+import { Card, Purchase, CardWithPurchases, RecurringTemplate, RecurrenceFrequency } from '../../types/supabase';
 import { formatCurrency } from '../../utils/calculations';
 import { formatMonthName } from '../../utils/dateUtils';
 
@@ -28,21 +32,31 @@ export default function CartoesScreen() {
   const { canEdit, isViewOnly } = usePermissions(activeWorkspace);
   const {
     month,
+    cards,
     loading,
     currentMonthId,
-    addCartao,
-    updateCartao,
-    deleteCartao,
-    addCompra,
-    updateCompra,
-    deleteCompra,
-    recalculateTotals,
+    addCard,
+    updateCard,
+    deleteCard,
+    addPurchase,
+    updatePurchase,
+    deletePurchase,
+    total_cards,
+    backfillPurchaseInstances,
   } = useMonth();
+
+  const {
+    templates: allTemplates,
+    createTemplate,
+    updateTemplate,
+    deleteTemplate,
+    toggleTemplate,
+  } = useRecurringTemplates();
 
   const [cartaoModalVisible, setCartaoModalVisible] = useState(false);
   const [compraModalVisible, setCompraModalVisible] = useState(false);
-  const [editingCartao, setEditingCartao] = useState<Cartao | null>(null);
-  const [editingCompra, setEditingCompra] = useState<Compra | null>(null);
+  const [editingCartao, setEditingCartao] = useState<Card | null>(null);
+  const [editingCompra, setEditingCompra] = useState<Purchase | null>(null);
   const [selectedCartaoId, setSelectedCartaoId] = useState<string | null>(null);
   const [deleteCartaoDialogVisible, setDeleteCartaoDialogVisible] = useState(false);
   const [deleteCompraDialogVisible, setDeleteCompraDialogVisible] = useState(false);
@@ -53,8 +67,22 @@ export default function CartoesScreen() {
   } | null>(null);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
 
-  const totalLimite = month?.cartoes.reduce((sum, c) => sum + c.limiteTotal, 0) || 0;
-  const totalUtilizado = month?.totalCartoes || 0;
+  // Tab state
+  const [currentTab, setCurrentTab] = useState('compras');
+
+  // Template modal state
+  const [templateModalVisible, setTemplateModalVisible] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<RecurringTemplate | null>(null);
+  const [deleteTemplateDialogVisible, setDeleteTemplateDialogVisible] = useState(false);
+  const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null);
+
+  // Filter templates for card_purchase type only
+  const purchaseTemplates = useMemo(() => {
+    return allTemplates.filter((t) => t.type === 'card_purchase');
+  }, [allTemplates]);
+
+  const totalLimite = cards.reduce((sum, c) => sum + (c.total_limit || 0), 0);
+  const totalUtilizado = total_cards;
   const totalDisponivel = totalLimite - totalUtilizado;
 
   const monthName = formatMonthName(currentMonthId);
@@ -69,7 +97,7 @@ export default function CartoesScreen() {
     setCartaoModalVisible(true);
   };
 
-  const handleEditCartao = (cartao: Cartao) => {
+  const handleEditCartao = (cartao: Card) => {
     if (!canEdit) {
       setSnackbarVisible(true);
       return;
@@ -79,18 +107,17 @@ export default function CartoesScreen() {
   };
 
   const handleSaveCartao = async (data: {
-    nome: string;
-    limiteTotal: number;
-    compras: any[];
+    name: string;
+    total_limit: number;
   }) => {
     if (!canEdit) {
       setSnackbarVisible(true);
       return;
     }
     if (editingCartao) {
-      await updateCartao(editingCartao.id, data);
+      await updateCard(editingCartao.id, data);
     } else {
-      await addCartao(data);
+      await addCard(data);
     }
   };
 
@@ -105,7 +132,7 @@ export default function CartoesScreen() {
 
   const handleConfirmDeleteCartao = async () => {
     if (deletingCartaoId) {
-      await deleteCartao(deletingCartaoId);
+      await deleteCard(deletingCartaoId);
       setDeleteCartaoDialogVisible(false);
       setDeletingCartaoId(null);
     }
@@ -116,7 +143,7 @@ export default function CartoesScreen() {
       setSnackbarVisible(true);
       return;
     }
-    await deleteCartao(id);
+    await deleteCard(id);
     setCartaoModalVisible(false);
   };
 
@@ -131,7 +158,7 @@ export default function CartoesScreen() {
     setCompraModalVisible(true);
   };
 
-  const handleEditCompra = (cartaoId: string, compra: Compra) => {
+  const handleEditCompra = (cartaoId: string, compra: Purchase) => {
     if (!canEdit) {
       setSnackbarVisible(true);
       return;
@@ -142,12 +169,12 @@ export default function CartoesScreen() {
   };
 
   const handleSaveCompra = async (data: {
-    descricao: string;
-    valorTotal: number;
-    parcelaAtual: number;
-    parcelasTotal: number;
-    marcado: boolean;
-    data?: Date;
+    description: string;
+    total_value: number;
+    current_installment: number;
+    total_installments: number;
+    is_marked: boolean;
+    purchase_date?: string;
   }) => {
     if (!canEdit) {
       setSnackbarVisible(true);
@@ -156,9 +183,9 @@ export default function CartoesScreen() {
     if (!selectedCartaoId) return;
 
     if (editingCompra) {
-      await updateCompra(selectedCartaoId, editingCompra.id, data);
+      await updatePurchase(editingCompra.id, data);
     } else {
-      await addCompra(selectedCartaoId, data);
+      await addPurchase(selectedCartaoId, data);
     }
   };
 
@@ -173,7 +200,7 @@ export default function CartoesScreen() {
 
   const handleConfirmDeleteCompra = async () => {
     if (deletingCompraData) {
-      await deleteCompra(deletingCompraData.cartaoId, deletingCompraData.compraId);
+      await deletePurchase(deletingCompraData.compraId);
       setDeleteCompraDialogVisible(false);
       setDeletingCompraData(null);
     }
@@ -185,20 +212,119 @@ export default function CartoesScreen() {
       return;
     }
     if (!selectedCartaoId) return;
-    await deleteCompra(selectedCartaoId, id);
+    await deletePurchase(id);
     setCompraModalVisible(false);
   };
 
   const handleToggleMarcado = async (
     cartaoId: string,
     compraId: string,
-    marcado: boolean
+    is_marked: boolean
   ) => {
     if (!canEdit) {
       setSnackbarVisible(true);
       return;
     }
-    await updateCompra(cartaoId, compraId, { marcado });
+    await updatePurchase(compraId, { is_marked });
+  };
+
+  // Template handlers
+  const handleAddTemplate = () => {
+    if (!canEdit) {
+      setSnackbarVisible(true);
+      return;
+    }
+    setEditingTemplate(null);
+    setTemplateModalVisible(true);
+  };
+
+  const handleEditTemplate = (template: RecurringTemplate) => {
+    if (!canEdit) {
+      setSnackbarVisible(true);
+      return;
+    }
+    setEditingTemplate(template);
+    setTemplateModalVisible(true);
+  };
+
+  const handleSaveTemplate = async (data: {
+    name: string;
+    value_formula: string;
+    frequency: RecurrenceFrequency;
+    start_date: string;
+    end_date?: string;
+    is_active: boolean;
+    card_id?: string;
+  }) => {
+    if (!canEdit) {
+      setSnackbarVisible(true);
+      return;
+    }
+
+    const metadata = {
+      card_id: data.card_id,
+      card_name: cards.find((c) => c.id === data.card_id)?.name,
+    };
+
+    if (editingTemplate) {
+      await updateTemplate(editingTemplate.id, {
+        name: data.name,
+        value_formula: data.value_formula,
+        frequency: data.frequency,
+        start_date: data.start_date,
+        end_date: data.end_date,
+        is_active: data.is_active,
+        metadata,
+      });
+    } else {
+      const newTemplate = await createTemplate({
+        name: data.name,
+        value_formula: data.value_formula,
+        type: 'card_purchase',
+        frequency: data.frequency,
+        start_date: data.start_date,
+        end_date: data.end_date,
+        is_active: data.is_active,
+        metadata,
+      });
+
+      // Backfill purchases for all applicable months
+      await backfillPurchaseInstances(newTemplate.id);
+    }
+  };
+
+  const handleDeleteTemplatePress = (id: string) => {
+    if (!canEdit) {
+      setSnackbarVisible(true);
+      return;
+    }
+    setDeletingTemplateId(id);
+    setDeleteTemplateDialogVisible(true);
+  };
+
+  const handleConfirmDeleteTemplate = async () => {
+    if (deletingTemplateId) {
+      await deleteTemplate(deletingTemplateId);
+      setDeleteTemplateDialogVisible(false);
+      setDeletingTemplateId(null);
+    }
+  };
+
+  const handleDeleteTemplateFromModal = async (id: string) => {
+    if (!canEdit) {
+      setSnackbarVisible(true);
+      return;
+    }
+    await deleteTemplate(id);
+    setTemplateModalVisible(false);
+  };
+
+  const handleToggleTemplateAtivo = async (id: string, isActive: boolean) => {
+    if (!canEdit) {
+      setSnackbarVisible(true);
+      return;
+    }
+    await toggleTemplate(id, isActive, currentMonthId);
   };
 
   return (
@@ -216,8 +342,8 @@ export default function CartoesScreen() {
       </View>
 
       {/* Summary Card */}
-      <Card style={styles.summaryCard} elevation={2}>
-        <Card.Content>
+      <PaperCard style={styles.summaryCard} elevation={2}>
+        <PaperCard.Content>
           <View style={styles.summaryRow}>
             <Text variant="bodyMedium">Limite total</Text>
             <Text variant="titleMedium" style={styles.totalLimite}>
@@ -243,47 +369,108 @@ export default function CartoesScreen() {
             </Text>
           </View>
           <Text variant="bodySmall" style={styles.legend}>
-            {month?.cartoes.length || 0} cartões cadastrados
+            {cards.length} cartões cadastrados
           </Text>
-        </Card.Content>
-      </Card>
+        </PaperCard.Content>
+      </PaperCard>
+
+      {/* Tab Selection */}
+      <SegmentedButtons
+        value={currentTab}
+        onValueChange={setCurrentTab}
+        buttons={[
+          {
+            value: 'compras',
+            label: 'Compras',
+            icon: 'credit-card',
+          },
+          {
+            value: 'recorrentes',
+            label: 'Recorrentes',
+            icon: 'autorenew',
+          },
+        ]}
+        style={styles.segmentedButtons}
+      />
 
       {/* Cards List */}
-      {!month || month.cartoes.length === 0 ? (
-        <View style={styles.emptyState}>
-          <MaterialCommunityIcons
-            name="credit-card-outline"
-            size={64}
-            color={theme.colors.onSurfaceDisabled}
-          />
-          <Text variant="titleMedium" style={styles.emptyTitle}>
-            Nenhum cartão cadastrado
-          </Text>
-          <Text variant="bodyMedium" style={styles.emptySubtitle}>
-            Toque no + para adicionar
-          </Text>
-        </View>
-      ) : (
-        <ScrollView
-          contentContainerStyle={styles.list}
-          refreshControl={
-            <RefreshControl refreshing={loading} onRefresh={recalculateTotals} />
-          }
-        >
-          {month.cartoes.map((cartao) => (
-            <CartaoCard
-              key={cartao.id}
-              cartao={cartao}
-              onEdit={handleEditCartao}
-              onDelete={handleDeleteCartaoPress}
-              onAddCompra={handleAddCompra}
-              onEditCompra={handleEditCompra}
-              onDeleteCompra={handleDeleteCompraPress}
-              onToggleMarcado={handleToggleMarcado}
-              readonly={isViewOnly}
+      {currentTab === 'compras' ? (
+        cards.length === 0 ? (
+          <View style={styles.emptyState}>
+            <MaterialCommunityIcons
+              name="credit-card-outline"
+              size={64}
+              color={theme.colors.onSurfaceDisabled}
             />
-          ))}
-        </ScrollView>
+            <Text variant="titleMedium" style={styles.emptyTitle}>
+              Nenhum cartão cadastrado
+            </Text>
+            <Text variant="bodyMedium" style={styles.emptySubtitle}>
+              Toque no + para adicionar
+            </Text>
+          </View>
+        ) : (
+          <ScrollView
+            contentContainerStyle={styles.list}
+            refreshControl={
+              <RefreshControl refreshing={loading} onRefresh={() => {}} />
+            }
+          >
+            {cards.map((cartao) => (
+              <CartaoCard
+                key={cartao.id}
+                cartao={cartao}
+                onEdit={handleEditCartao}
+                onDelete={handleDeleteCartaoPress}
+                onAddCompra={handleAddCompra}
+                onEditCompra={handleEditCompra}
+                onDeleteCompra={handleDeleteCompraPress}
+                onToggleMarcado={handleToggleMarcado}
+                readonly={isViewOnly}
+              />
+            ))}
+          </ScrollView>
+        )
+      ) : (
+        // Templates List
+        purchaseTemplates.length === 0 ? (
+          <View style={styles.emptyState}>
+            <MaterialCommunityIcons
+              name="credit-card-sync"
+              size={64}
+              color={theme.colors.onSurfaceDisabled}
+            />
+            <Text variant="titleMedium" style={styles.emptyTitle}>
+              Nenhuma compra recorrente
+            </Text>
+            <Text variant="bodyMedium" style={styles.emptySubtitle}>
+              Toque no + para adicionar assinaturas mensais
+            </Text>
+          </View>
+        ) : (
+          <ScrollView
+            contentContainerStyle={styles.list}
+            refreshControl={
+              <RefreshControl refreshing={loading} onRefresh={() => {}} />
+            }
+          >
+            {purchaseTemplates.map((template) => {
+              const metadata = (template.metadata || {}) as any;
+              const cardName = cards.find((c) => c.id === metadata.card_id)?.name;
+              return (
+                <CompraRecorrenteCard
+                  key={template.id}
+                  template={template}
+                  cardName={cardName}
+                  onToggleAtivo={handleToggleTemplateAtivo}
+                  onPress={handleEditTemplate}
+                  onDelete={handleDeleteTemplatePress}
+                  readonly={isViewOnly}
+                />
+              );
+            })}
+          </ScrollView>
+        )
       )}
 
       {/* FAB - Only show for editors and owners */}
@@ -291,7 +478,7 @@ export default function CartoesScreen() {
         <FAB
           icon="plus"
           style={[styles.fab, { backgroundColor: theme.colors.primary }]}
-          onPress={handleAddCartao}
+          onPress={currentTab === 'compras' ? handleAddCartao : handleAddTemplate}
         />
       )}
 
@@ -367,6 +554,43 @@ export default function CartoesScreen() {
         </Dialog>
       </Portal>
 
+      {/* Template Form Modal */}
+      <CompraRecorrenteFormModal
+        visible={templateModalVisible}
+        template={editingTemplate}
+        cards={cards}
+        onDismiss={() => setTemplateModalVisible(false)}
+        onSave={handleSaveTemplate}
+        onDelete={handleDeleteTemplateFromModal}
+      />
+
+      {/* Delete Template Confirmation Dialog */}
+      <Portal>
+        <Dialog
+          visible={deleteTemplateDialogVisible}
+          onDismiss={() => setDeleteTemplateDialogVisible(false)}
+        >
+          <Dialog.Title>Confirmar exclusão</Dialog.Title>
+          <Dialog.Content>
+            <Text>Deseja excluir esta compra recorrente?</Text>
+            <Text style={{ marginTop: 8, opacity: 0.7 }}>
+              Compras já criadas em meses anteriores não serão afetadas.
+            </Text>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => setDeleteTemplateDialogVisible(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onPress={handleConfirmDeleteTemplate}
+              textColor={theme.colors.error}
+            >
+              Excluir
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+
       {/* Permission Denied Snackbar */}
       <Snackbar
         visible={snackbarVisible}
@@ -396,6 +620,10 @@ const styles = StyleSheet.create({
     textTransform: 'capitalize',
   },
   summaryCard: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+  },
+  segmentedButtons: {
     marginHorizontal: 16,
     marginBottom: 16,
   },

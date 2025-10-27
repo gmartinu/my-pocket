@@ -18,21 +18,21 @@ import {
   HelperText,
   Dialog,
 } from "react-native-paper";
-import { Compra } from "../../types/month";
+import { Purchase } from "../../types/supabase";
 import { evaluateFormula, formatCurrency } from "../../utils/calculations";
 
 interface CompraFormModalProps {
   visible: boolean;
-  compra?: Compra | null;
+  compra?: Purchase | null;
   cartaoId: string;
   onDismiss: () => void;
   onSave: (data: {
-    descricao: string;
-    valorTotal: number;
-    parcelaAtual: number;
-    parcelasTotal: number;
-    marcado: boolean;
-    data?: Date;
+    description: string;
+    total_value: number;
+    current_installment: number;
+    total_installments: number;
+    is_marked: boolean;
+    purchase_date?: string;
   }) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
 }
@@ -61,16 +61,14 @@ export default function CompraFormModal({
   useEffect(() => {
     if (visible) {
       if (compra) {
-        setDescricao(compra.descricao);
-        setValorTotal(String(compra.valorTotal));
-        setParcelaAtual(String(compra.parcelaAtual));
-        setParcelasTotal(String(compra.parcelasTotal));
-        setMarcado(compra.marcado);
+        setDescricao(compra.description);
+        setValorTotal(String(compra.total_value || 0));
+        setParcelaAtual(String(compra.current_installment));
+        setParcelasTotal(String(compra.total_installments));
+        setMarcado(compra.is_marked || false);
         setData(
-          compra.data
-            ? compra.data instanceof Date
-              ? compra.data
-              : compra.data.toDate()
+          compra.purchase_date
+            ? new Date(compra.purchase_date)
             : new Date()
         );
       } else {
@@ -155,12 +153,12 @@ export default function CompraFormModal({
       }
 
       await onSave({
-        descricao: descricao.trim(),
-        valorTotal: valorCalculado,
-        parcelaAtual: parseInt(parcelaAtual),
-        parcelasTotal: parseInt(parcelasTotal),
-        marcado,
-        data,
+        description: descricao.trim(),
+        total_value: valorCalculado,
+        current_installment: parseInt(parcelaAtual),
+        total_installments: parseInt(parcelasTotal),
+        is_marked: marcado,
+        purchase_date: data.toISOString().split('T')[0], // Format as YYYY-MM-DD
       });
       onDismiss();
     } catch (err: any) {

@@ -14,7 +14,7 @@ export interface AuthContextData {
   signOut: () => Promise<void>;
 }
 
-// Firestore user document
+// Supabase user document (legacy, not used anymore)
 export interface UserDocument {
   name: string;
   displayName: string;

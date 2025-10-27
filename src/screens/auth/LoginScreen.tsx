@@ -4,7 +4,7 @@ import { TextInput, Button, Text, Surface, useTheme } from 'react-native-paper';
 import { useNavigation } from '@react-navigation/native';
 import { AuthScreenNavigationProp } from '../../types/navigation';
 import { useAuth } from '../../contexts/AuthContext';
-import { translateFirebaseError, validateEmail, validatePassword } from '../../utils/errorMessages';
+import { validateEmail, validatePassword } from '../../utils/errorMessages';
 
 export default function LoginScreen() {
   const navigation = useNavigation<AuthScreenNavigationProp>();
@@ -18,29 +18,37 @@ export default function LoginScreen() {
   const [error, setError] = useState('');
 
   const handleLogin = async () => {
+    console.log('📝 [LoginScreen] Starting login...');
     // Clear previous errors
     setError('');
 
     // Validate inputs
     const emailError = validateEmail(email);
     if (emailError) {
+      console.log('❌ [LoginScreen] Email validation failed:', emailError);
       setError(emailError);
       return;
     }
 
     const passwordError = validatePassword(password);
     if (passwordError) {
+      console.log('❌ [LoginScreen] Password validation failed:', passwordError);
       setError(passwordError);
       return;
     }
+
+    console.log('✅ [LoginScreen] All validations passed');
+    console.log('✅ [LoginScreen] Calling signIn with:', email.trim());
 
     // Attempt sign in
     setLoading(true);
     try {
       await signIn(email.trim(), password);
+      console.log('✅ [LoginScreen] SignIn completed successfully');
     } catch (err: any) {
-      const errorCode = err.code || 'unknown';
-      setError(translateFirebaseError(errorCode));
+      console.error('❌ [LoginScreen] SignIn error:', err);
+      console.error('❌ [LoginScreen] Error message:', err.message);
+      setError(err.message || 'Erro desconhecido ao fazer login');
     } finally {
       setLoading(false);
     }

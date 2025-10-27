@@ -5,7 +5,6 @@ import { useNavigation } from '@react-navigation/native';
 import { AuthScreenNavigationProp } from '../../types/navigation';
 import { useAuth } from '../../contexts/AuthContext';
 import {
-  translateFirebaseError,
   validateEmail,
   validatePassword,
   validateName,
@@ -26,43 +25,55 @@ export default function RegisterScreen() {
   const [error, setError] = useState('');
 
   const handleRegister = async () => {
+    console.log('📝 [RegisterScreen] Starting registration...');
     // Clear previous errors
     setError('');
 
     // Validate inputs
     const nameError = validateName(name);
     if (nameError) {
+      console.log('❌ [RegisterScreen] Name validation failed:', nameError);
       setError(nameError);
       return;
     }
 
     const emailError = validateEmail(email);
     if (emailError) {
+      console.log('❌ [RegisterScreen] Email validation failed:', emailError);
       setError(emailError);
       return;
     }
 
     const passwordError = validatePassword(password);
     if (passwordError) {
+      console.log('❌ [RegisterScreen] Password validation failed:', passwordError);
       setError(passwordError);
       return;
     }
 
     // Check if passwords match
     if (password !== confirmPassword) {
+      console.log('❌ [RegisterScreen] Passwords do not match');
       setError('As senhas não coincidem');
       return;
     }
 
+    console.log('✅ [RegisterScreen] All validations passed');
+    console.log('✅ [RegisterScreen] Calling signUp with:', { email: email.trim(), name: name.trim() });
+
     // Attempt sign up
     setLoading(true);
     try {
-      await signUp(name.trim(), email.trim(), password);
+      // Supabase signature: signUp(email, password, displayName?)
+      await signUp(email.trim(), password, name.trim());
+      console.log('✅ [RegisterScreen] SignUp completed successfully');
       // User will be automatically navigated after successful registration
       // via the AuthContext's onAuthStateChanged listener
     } catch (err: any) {
-      const errorCode = err.code || 'unknown';
-      setError(translateFirebaseError(errorCode));
+      console.error('❌ [RegisterScreen] SignUp error:', err);
+      console.error('❌ [RegisterScreen] Error message:', err.message);
+      console.error('❌ [RegisterScreen] Error code:', err.code);
+      setError(err.message || 'Erro desconhecido ao criar conta');
     } finally {
       setLoading(false);
     }

@@ -65,13 +65,13 @@ export default function ShareWorkspaceModal({
       console.log('📊 Resultado da busca:', result);
 
       if (!result) {
-        console.log('❌ Usuário não encontrado no Firestore');
+        console.log('❌ Usuário não encontrado no Supabase');
         setError('Usuário não encontrado. Verifique se o email está correto e se o usuário já se registrou no app.');
         return;
       }
 
       // Check if it's the current user
-      if (result.id === user?.uid) {
+      if (result.id === user?.id) {
         setError('Você não pode adicionar a si mesmo');
         return;
       }

@@ -2,15 +2,15 @@ import React from 'react';
 import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { Card, Text, Switch, IconButton, useTheme, Chip } from 'react-native-paper';
 import { Swipeable } from 'react-native-gesture-handler';
+// @ts-ignore
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Despesa } from '../types/month';
+import { ExpenseInstance } from '../types/supabase';
 import { formatCurrency } from '../utils/calculations';
-import { RECURRENCE_OPTIONS } from '../types/recurring';
 
 interface DespesaCardProps {
-  despesa: Despesa;
-  onTogglePago: (id: string, pago: boolean) => void;
-  onPress: (despesa: Despesa) => void;
+  despesa: ExpenseInstance;
+  onTogglePago: (id: string, is_paid: boolean) => void;
+  onPress: (despesa: ExpenseInstance) => void;
   onDelete: (id: string) => void;
   readonly?: boolean;
 }
@@ -24,8 +24,8 @@ export default function DespesaCard({
 }: DespesaCardProps) {
   const theme = useTheme();
 
-  const borderColor = despesa.pago ? theme.colors.primary : theme.colors.outline;
-  const iconColor = despesa.pago ? theme.colors.primary : theme.colors.onSurfaceDisabled;
+  const borderColor = despesa.is_paid ? theme.colors.primary : theme.colors.outline;
+  const iconColor = despesa.is_paid ? theme.colors.primary : theme.colors.onSurfaceDisabled;
 
   const renderRightActions = () => {
     if (readonly) return null;
@@ -66,22 +66,17 @@ export default function DespesaCard({
               <View style={styles.textContent}>
                 <View style={styles.nameRow}>
                   <Text variant="titleMedium" style={styles.name}>
-                    {despesa.nome}
+                    {despesa.name}
                   </Text>
-                  {despesa.recurring?.isRecurring && despesa.recurring.frequency && (
+                  {despesa.template_id && (
                     <Chip
-                      icon={() => (
-                        <MaterialCommunityIcons
-                          name={RECURRENCE_OPTIONS[despesa.recurring.frequency!].icon as any}
-                          size={14}
-                          color={theme.colors.primary}
-                        />
-                      )}
+                      icon="calendar-sync"
                       compact
-                      style={[styles.recurrenceChip, { backgroundColor: theme.colors.primaryContainer }]}
-                      textStyle={[styles.recurrenceText, { color: theme.colors.primary }]}
+                      mode="outlined"
+                      style={styles.recurrenceChip}
+                      textStyle={styles.recurrenceText}
                     >
-                      {RECURRENCE_OPTIONS[despesa.recurring.frequency!].label}
+                      Recorrente
                     </Chip>
                   )}
                 </View>
@@ -89,12 +84,12 @@ export default function DespesaCard({
                   variant="titleSmall"
                   style={[styles.value, { color: theme.colors.primary }]}
                 >
-                  {formatCurrency(despesa.valorCalculado)}
+                  {formatCurrency(despesa.value_calculated || 0)}
                 </Text>
               </View>
             </View>
             <Switch
-              value={despesa.pago}
+              value={despesa.is_paid || false}
               onValueChange={(value) => onTogglePago(despesa.id, value)}
               color={theme.colors.primary}
               disabled={readonly}
@@ -140,12 +135,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   recurrenceChip: {
-    height: 22,
+    height: 24,
+    paddingHorizontal: 4,
   },
   recurrenceText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '600',
     marginVertical: 0,
+    lineHeight: 14,
   },
   value: {
     fontWeight: 'bold',

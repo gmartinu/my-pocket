@@ -160,8 +160,6 @@ export const AnimatedFAB: React.FC<AnimatedFABProps> = ({
       <PaperFAB
         icon={icon}
         onPress={handlePress}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
         label={label}
       />
     </Animated.View>

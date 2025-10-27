@@ -1,18 +1,19 @@
 import React, { useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Card, Text, List, IconButton, Chip, useTheme, Badge } from 'react-native-paper';
+// @ts-ignore
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Cartao, Compra } from '../types/month';
+import { CardWithPurchases, Purchase } from '../types/supabase';
 import { formatCurrency } from '../utils/calculations';
 
 interface CartaoCardProps {
-  cartao: Cartao;
-  onEdit: (cartao: Cartao) => void;
+  cartao: CardWithPurchases;
+  onEdit: (cartao: CardWithPurchases) => void;
   onDelete: (id: string) => void;
   onAddCompra: (cartaoId: string) => void;
-  onEditCompra: (cartaoId: string, compra: Compra) => void;
+  onEditCompra: (cartaoId: string, compra: Purchase) => void;
   onDeleteCompra: (cartaoId: string, compraId: string) => void;
-  onToggleMarcado: (cartaoId: string, compraId: string, marcado: boolean) => void;
+  onToggleMarcado: (cartaoId: string, compraId: string, is_marked: boolean) => void;
   readonly?: boolean;
 }
 
@@ -29,9 +30,12 @@ export default function CartaoCard({
   const theme = useTheme();
   const [expanded, setExpanded] = useState(false);
 
-  const limiteUtilizado = cartao.totalFatura;
-  const limiteDisponivel = cartao.limiteTotal - limiteUtilizado;
-  const percentageUsed = cartao.limiteTotal > 0 ? (limiteUtilizado / cartao.limiteTotal) * 100 : 0;
+  // Calculate total fatura from purchases
+  const limiteUtilizado = (cartao.purchases || []).reduce((sum, p) => {
+    return p.is_marked ? sum + ((p.total_value || 0) / (p.total_installments || 1)) : sum;
+  }, 0);
+  const limiteDisponivel = (cartao.total_limit || 0) - limiteUtilizado;
+  const percentageUsed = (cartao.total_limit || 0) > 0 ? (limiteUtilizado / (cartao.total_limit || 1)) * 100 : 0;
 
   const getUsageColor = () => {
     if (percentageUsed >= 90) return theme.colors.error;
@@ -42,8 +46,8 @@ export default function CartaoCard({
   return (
     <Card style={[styles.card, { overflow: 'hidden' }]} elevation={2}>
       <List.Accordion
-        title={cartao.nome}
-        description={`Fatura: ${formatCurrency(cartao.totalFatura)}`}
+        title={cartao.name}
+        description={`Fatura: ${formatCurrency(limiteUtilizado)}`}
         expanded={expanded}
         onPress={() => setExpanded(!expanded)}
         left={(props) => <List.Icon {...props} icon="credit-card" />}
@@ -81,7 +85,7 @@ export default function CartaoCard({
           <View style={styles.summaryRow}>
             <Text variant="bodySmall">Limite total</Text>
             <Text variant="bodyMedium" style={styles.bold}>
-              {formatCurrency(cartao.limiteTotal)}
+              {formatCurrency(cartao.total_limit || 0)}
             </Text>
           </View>
           <View style={styles.summaryRow}>
@@ -108,7 +112,7 @@ export default function CartaoCard({
           }
         ]}>
           <View style={styles.comprasHeader}>
-            <Text variant="titleSmall">Compras ({cartao.compras.length})</Text>
+            <Text variant="titleSmall">Compras ({(cartao.purchases || []).length})</Text>
             {!readonly && (
               <IconButton
                 icon="plus-circle"
@@ -119,13 +123,13 @@ export default function CartaoCard({
             )}
           </View>
 
-          {cartao.compras.length === 0 ? (
+          {(cartao.purchases || []).length === 0 ? (
             <Text variant="bodySmall" style={styles.emptyText}>
               Nenhuma compra cadastrada
             </Text>
           ) : (
-            cartao.compras.map((compra) => {
-              const valorParcela = compra.valorTotal / compra.parcelasTotal;
+            (cartao.purchases || []).map((compra) => {
+              const valorParcela = (compra.total_value || 0) / (compra.total_installments || 1);
               return (
                 <Card
                   key={compra.id}
@@ -140,9 +144,9 @@ export default function CartaoCard({
                       <View style={styles.compraInfo}>
                         <View style={styles.descricaoRow}>
                           <Text variant="bodyMedium" style={styles.bold}>
-                            {compra.descricao}
+                            {compra.description}
                           </Text>
-                          {compra.purchaseGroupId && (
+                          {compra.purchase_group_id && (
                             <MaterialCommunityIcons
                               name="link-variant"
                               size={16}
@@ -152,36 +156,34 @@ export default function CartaoCard({
                           )}
                         </View>
                         <Text variant="bodySmall" style={styles.parcelas}>
-                          {compra.parcelaAtual}/{compra.parcelasTotal}x de {formatCurrency(valorParcela)}
-                          {compra.purchaseGroupId && (
+                          {compra.current_installment}/{compra.total_installments}x de {formatCurrency(valorParcela)}
+                          {compra.purchase_group_id && (
                             <Text style={[styles.linkedBadge, { color: theme.colors.primary }]}>
                               {' '}• Sincronizado
                             </Text>
                           )}
                         </Text>
                         <Text variant="bodySmall" style={styles.total}>
-                          Total: {formatCurrency(compra.valorTotal)}
+                          Total: {formatCurrency(compra.total_value || 0)}
                         </Text>
-                        {compra.data && (
+                        {compra.purchase_date && (
                           <Text variant="bodySmall" style={styles.dataCompra}>
-                            Data: {new Date(
-                              compra.data instanceof Date ? compra.data : compra.data.toDate()
-                            ).toLocaleDateString('pt-BR')}
+                            Data: {new Date(compra.purchase_date).toLocaleDateString('pt-BR')}
                           </Text>
                         )}
                       </View>
                       <View style={styles.compraActions}>
                         <Chip
-                          selected={compra.marcado}
+                          selected={compra.is_marked || false}
                           onPress={
                             !readonly
-                              ? () => onToggleMarcado(cartao.id, compra.id, !compra.marcado)
+                              ? () => onToggleMarcado(cartao.id, compra.id, !(compra.is_marked || false))
                               : undefined
                           }
                           style={styles.chip}
                           disabled={readonly}
                         >
-                          {compra.marcado ? 'Marcado' : 'Não marcado'}
+                          {compra.is_marked ? 'Marcado' : 'Não marcado'}
                         </Chip>
                         {!readonly && (
                           <View style={styles.iconRow}>

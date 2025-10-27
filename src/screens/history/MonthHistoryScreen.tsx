@@ -3,8 +3,7 @@ import { View, StyleSheet, ScrollView, FlatList } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, Card, useTheme, ActivityIndicator, Chip, Surface, IconButton } from 'react-native-paper';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
-import { collection, getDocs, query, orderBy } from 'firebase/firestore';
-import { db } from '../../config/firebase';
+import { supabase } from '../../config/supabase';
 import { useNavigation } from '@react-navigation/native';
 
 interface MonthHistoryItem {
@@ -14,7 +13,8 @@ interface MonthHistoryItem {
   sobra: number;
   totalDespesas: number;
   totalCartoes: number;
-  criadoEm: any;
+  criadoEm: string;
+  year: number;
 }
 
 export default function MonthHistoryScreen() {
@@ -42,39 +42,43 @@ export default function MonthHistoryScreen() {
 
     setLoading(true);
     try {
-      const monthsRef = collection(db, 'workspaces', activeWorkspace.id, 'months');
-      const q = query(monthsRef, orderBy('criadoEm', 'desc'));
-      const snapshot = await getDocs(q);
+      console.log('📜 [MonthHistoryScreen] Loading month history for workspace:', activeWorkspace.id);
+
+      // Query months from Supabase (using the view month_totals)
+      const { data: monthsData, error: monthsError } = await supabase
+        .from('month_totals')
+        .select('*')
+        .eq('workspace_id', activeWorkspace.id)
+        .order('year', { ascending: false })
+        .order('month', { ascending: false });
+
+      if (monthsError) throw monthsError;
+
+      console.log('📜 [MonthHistoryScreen] Loaded months:', monthsData?.length);
 
       const monthsList: MonthHistoryItem[] = [];
       const yearsSet = new Set<number>();
 
-      snapshot.docs.forEach((doc) => {
-        const data = doc.data();
+      if (monthsData) {
+        monthsData.forEach((data) => {
+          const despesasTotal = data.total_expenses || 0;
+          const cartoesTotal = data.total_cards || 0;
+          const sobra = (data.saldo_inicial || 0) - despesasTotal - cartoesTotal;
 
-        const despesasTotal = data.despesas?.reduce((sum: number, d: any) => sum + (d.valorCalculado || 0), 0) || 0;
-        const cartoesTotal = data.cartoes?.reduce((sum: number, c: any) => {
-          return sum + (c.compras?.reduce((s: number, comp: any) => s + (comp.valorParcela || 0), 0) || 0);
-        }, 0) || 0;
+          monthsList.push({
+            id: data.month_id || '',
+            nome: data.month_name || data.month_id || '',
+            saldoInicial: data.saldo_inicial || 0,
+            sobra: sobra,
+            totalDespesas: despesasTotal,
+            totalCartoes: cartoesTotal,
+            criadoEm: '', // Not available in month_totals view
+            year: data.year || new Date().getFullYear(),
+          });
 
-        const sobra = (data.saldoInicial || 0) - despesasTotal - cartoesTotal;
-
-        monthsList.push({
-          id: doc.id,
-          nome: data.nome || doc.id,
-          saldoInicial: data.saldoInicial || 0,
-          sobra: sobra,
-          totalDespesas: despesasTotal,
-          totalCartoes: cartoesTotal,
-          criadoEm: data.criadoEm,
+          yearsSet.add(data.year || new Date().getFullYear());
         });
-
-        // Extract year from creation date
-        if (data.criadoEm?.toDate) {
-          const year = data.criadoEm.toDate().getFullYear();
-          yearsSet.add(year);
-        }
-      });
+      }
 
       // Calculate stats
       const totalExpenses = monthsList.reduce((sum, m) => sum + m.totalDespesas + m.totalCartoes, 0);
@@ -92,20 +96,17 @@ export default function MonthHistoryScreen() {
         highestExpenseMonth: sortedByExpense[0]?.nome || '',
         highestSurplusMonth: sortedBySurplus[0]?.nome || '',
       });
+
+      console.log('✅ [MonthHistoryScreen] Month history loaded successfully');
     } catch (error) {
-      console.error('Failed to load month history:', error);
+      console.error('❌ [MonthHistoryScreen] Failed to load month history:', error);
     } finally {
       setLoading(false);
     }
   };
 
   const filteredMonths = selectedYear
-    ? months.filter((m) => {
-        if (m.criadoEm?.toDate) {
-          return m.criadoEm.toDate().getFullYear() === selectedYear;
-        }
-        return false;
-      })
+    ? months.filter((m) => m.year === selectedYear)
     : months;
 
   const renderMonthCard = ({ item }: { item: MonthHistoryItem }) => {
