@@ -188,6 +188,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
     // Create workspace document
     const workspaceRef = doc(collection(db, 'workspaces'));
+    const now = new Date();
     const newWorkspace: Omit<Workspace, 'id'> = {
       name: name.trim(),
       owner: user.uid,
@@ -196,10 +197,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         email: user.email || '',
         displayName: user.displayName || user.email || 'User',
         role: 'owner',
-        addedAt: serverTimestamp(),
+        addedAt: now,
       }],
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      createdAt: now,
+      updatedAt: now,
     };
 
     await setDoc(workspaceRef, newWorkspace);
@@ -372,7 +373,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         email,
         displayName,
         role,
-        addedAt: serverTimestamp(),
+        addedAt: new Date(),
       }),
       updatedAt: serverTimestamp(),
     });

@@ -19,7 +19,7 @@ interface MonthHistoryItem {
 
 export default function MonthHistoryScreen() {
   const theme = useTheme();
-  const { currentWorkspace } = useWorkspace();
+  const { activeWorkspace } = useWorkspace();
   const navigation = useNavigation();
   const [loading, setLoading] = useState(true);
   const [months, setMonths] = useState<MonthHistoryItem[]>([]);
@@ -32,17 +32,17 @@ export default function MonthHistoryScreen() {
   });
 
   useEffect(() => {
-    if (currentWorkspace) {
+    if (activeWorkspace) {
       loadMonthHistory();
     }
-  }, [currentWorkspace]);
+  }, [activeWorkspace]);
 
   const loadMonthHistory = async () => {
-    if (!currentWorkspace) return;
+    if (!activeWorkspace) return;
 
     setLoading(true);
     try {
-      const monthsRef = collection(db, 'workspaces', currentWorkspace.id, 'months');
+      const monthsRef = collection(db, 'workspaces', activeWorkspace.id, 'months');
       const q = query(monthsRef, orderBy('criadoEm', 'desc'));
       const snapshot = await getDocs(q);
 

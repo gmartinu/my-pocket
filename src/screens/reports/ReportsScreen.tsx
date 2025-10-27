@@ -24,7 +24,7 @@ interface CategoryData {
 
 export default function ReportsScreen() {
   const theme = useTheme();
-  const { currentWorkspace } = useWorkspace();
+  const { activeWorkspace } = useWorkspace();
   const [period, setPeriod] = useState('6m');
   const [loading, setLoading] = useState(true);
   const [monthlyData, setMonthlyData] = useState<MonthData[]>([]);
@@ -37,13 +37,13 @@ export default function ReportsScreen() {
   });
 
   useEffect(() => {
-    if (currentWorkspace) {
+    if (activeWorkspace) {
       loadReportsData();
     }
-  }, [currentWorkspace, period]);
+  }, [activeWorkspace, period]);
 
   const loadReportsData = async () => {
-    if (!currentWorkspace) return;
+    if (!activeWorkspace) return;
 
     setLoading(true);
     try {
@@ -51,7 +51,7 @@ export default function ReportsScreen() {
       const monthsToLoad = period === '3m' ? 3 : period === '6m' ? 6 : 12;
 
       // Query months from Firestore
-      const monthsRef = collection(db, 'workspaces', currentWorkspace.id, 'months');
+      const monthsRef = collection(db, 'workspaces', activeWorkspace.id, 'months');
       const q = query(monthsRef, orderBy('criadoEm', 'desc'), limit(monthsToLoad));
       const snapshot = await getDocs(q);
 
