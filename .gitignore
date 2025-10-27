@@ -50,3 +50,5 @@ firebase-debug.log
 firestore-debug.log
 
 phases/*
+
+.claude
